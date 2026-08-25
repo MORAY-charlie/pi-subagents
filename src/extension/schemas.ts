@@ -359,7 +359,7 @@ const SubagentParamProperties = {
 	toolTimeoutMs: Type.Optional(Type.Integer({ minimum: 1, description: "Per-tool deadline (ms); fast builtins default 5m." })),
 	toolBudget: Type.Optional(ToolBudgetOverride),
 	usageBudget: Type.Optional(UsageBudgetOverride),
-	agentScope: Type.Optional(Type.String({ description: "user/project/both (default); project wins collisions." })),
+	agentScope: Type.Optional(Type.String({ description: "Agent discovery scope: 'user', 'project', or 'both' (default: 'user'; project wins on name collisions when explicitly using 'both')" })),
 	cwd: Type.Optional(Type.String({ description: "Execution/project-pane directory." })),
 	machine: Type.Optional(Type.String({ minLength: 1, maxLength: 128, description: "Herdr saved machine id or label; runs an external CLI agent there. cwd then means the directory on that machine." })),
 	artifacts: Type.Optional(Type.Boolean({ description: "Debug artifacts; default true." })),

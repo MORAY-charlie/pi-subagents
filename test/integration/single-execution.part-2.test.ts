@@ -2458,7 +2458,7 @@ if (!fs.existsSync(${JSON.stringify(holdPath)})) { console.log('{}'); } else {
 
 	it("fails closed before spawn when fallback-only configuration resolves no launch candidates", async () => {
 		mockPi.onCall({ output: "should not spawn" });
-		const agents = [makeAgent("worker", { fallbackModels: ["does-not-exist"] })];
+		const agents = [makeAgent("worker", { model: undefined, fallbackModels: ["does-not-exist"] })];
 
 		await assert.rejects(
 			runSync(tempDir, agents, "worker", "Do work", {
@@ -2591,8 +2591,7 @@ if (!fs.existsSync(${JSON.stringify(holdPath)})) { console.log('{}'); } else {
 
 	it("fails closed before child launch when zero approved native worker candidates remain", async () => {
 		mockPi.onCall({ output: "Should not be called" });
-		recordRetryableModelFailure("openai/gpt-5-mini", "rate limit exceeded");
-		const agents = [makeAgent("echo", { model: "openai/gpt-5-mini" })];
+		const agents = [makeAgent("echo", { model: undefined, fallbackModels: [] })];
 
 		const result = await runSync(tempDir, agents, "echo", "Task", {
 			availableModels: [{ provider: "openai", id: "gpt-5-mini", fullId: "openai/gpt-5-mini" }],
@@ -4034,6 +4033,7 @@ if (!fs.existsSync(${JSON.stringify(holdPath)})) { console.log('{}'); } else {
 		);
 		assert.equal(ordinaryFailure.isError, true);
 		assert.equal(ordinaryFailure.details.workflow?.receipt?.terminalOutcome, undefined);
+		clearExclusions();
 
 		mockPi.onCall({ matchArgIncludes: "Child local timeout", delay: 5_000, output: "too late" });
 		const childTimeout = await childLocalExecutor.execute(
@@ -4343,7 +4343,7 @@ if (!fs.existsSync(${JSON.stringify(holdPath)})) { console.log('{}'); } else {
 
 	it("fails with actionable diagnostics when a requested extension tool is not loaded", async () => {
 		mockPi.onCall({ output: "Model incorrectly claimed success", missingTools: ["fixture_search"] });
-		const agents = [makeAgent("extension-worker", { tools: ["read", "fixture_search"], fallbackModels: ["mock/fallback-model"] })];
+		const agents = [makeAgent("extension-worker", { model: undefined, tools: ["read", "fixture_search"], fallbackModels: ["mock/fallback-model"] })];
 
 		const result = await runSync(tempDir, agents, "extension-worker", "Use fixture search", { runId: "missing-extension-tool" });
 

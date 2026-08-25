@@ -200,7 +200,7 @@ function workflowParams(workflow: PromptWorkflow, args: string[], runtime: Retur
 	return {
 		agent: runtime.agentOverride ?? workflow.agent,
 		task,
-		agentScope: "both",
+		agentScope: "user",
 		...(context ? { context } : {}),
 		...(workflow.model ? { model: workflow.model } : {}),
 		...(workflow.skill !== undefined ? { skill: workflow.skill } : {}),
@@ -211,7 +211,7 @@ function workflowParams(workflow: PromptWorkflow, args: string[], runtime: Retur
 function promptWorkflowExecutionParams(workflows: PromptWorkflow[], args: string[], runtime: ReturnType<typeof parseRuntimeOptions>): SubagentParamsLike {
 	return {
 		workflowScript: promptWorkflowScript(workflows, args, runtime),
-		agentScope: "both",
+		agentScope: "user",
 		async: runtime.bg ? true : false,
 	};
 }

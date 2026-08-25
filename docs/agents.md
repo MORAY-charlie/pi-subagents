@@ -30,7 +30,7 @@ Discovery notes:
 - User and project settings can add extra recursive scan roots with `subagents.agentScanDirs`; fixed user/project agent directories keep higher priority than same-name agents from scan roots.
 - Use `subagents.agentExcludeDirs` to prune literal directory subtrees without disabling legacy agents. See [configuration.md](configuration.md#excluded-agent-directories-settings) for path resolution, scope, and exemptions.
 - Installed Pi packages can expose agent directories from either `{"pi-subagents":{"agents":["./agents"]}}` or `{"pi":{"subagents":{"agents":["./agents"]}}}` in their package manifest. Package agents load above builtins and below user/project agents.
-- Use `agentScope: "user" | "project" | "both"` to control discovery. `both` is the default, and project definitions win runtime-name collisions.
+- Use `agentScope: "user" | "project" | "both"` to control discovery. `user` is the default; project definitions are loaded only when explicitly requested, and win runtime-name collisions under `both`.
 
 ## Builtin agents
 

@@ -5,7 +5,7 @@ import * as path from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import { registerSubagentCapabilityCeiling, resolveSubagentCapabilityCeiling } from "../../src/api/capability-ceiling.ts";
 import { registerRequiredChildExtensions } from "../../src/api/required-child-extensions.ts";
-import { resolveSubagentLaunchContract, SUBAGENT_LAUNCH_CONTRACT_VERSION } from "../../src/api/preflight.ts";
+import { resolveSubagentLaunchContract as resolveLaunchContract, SUBAGENT_LAUNCH_CONTRACT_VERSION } from "../../src/api/preflight.ts";
 import { clearSkillCache } from "../../src/agents/skills.ts";
 import { computeMcpServerHash } from "../../src/runs/shared/mcp-direct-tool-allowlist.ts";
 import { clearExclusions, recordModelFailure } from "../../src/runs/shared/model-exclusions.ts";
@@ -16,9 +16,15 @@ let previousHome: string | undefined;
 let previousUserProfile: string | undefined;
 let previousAgentDir: string | undefined;
 
+const resolveSubagentLaunchContract = (input: Parameters<typeof resolveLaunchContract>[0]) =>
+	resolveLaunchContract({ agentScope: "project", ...input });
+
 function writeAgent(filePath: string, body: string): void {
 	fs.mkdirSync(path.dirname(filePath), { recursive: true });
-	fs.writeFileSync(filePath, body, "utf-8");
+	const explicitModelBody = body.includes("\nmodel:") || body.includes("\nrunner:")
+		? body
+		: body.replace(/^---\n/, "---\nmodel: mock/test-model\n");
+	fs.writeFileSync(filePath, explicitModelBody, "utf-8");
 }
 
 function writeSkill(cwd: string, name: string): void {
@@ -469,6 +475,7 @@ Project prompt.
 		writeAgent(path.join(cwd, ".pi", "agents", "worker.md"), `---
 name: worker
 description: Project worker
+model: inherit
 ---
 Project prompt.
 `);
@@ -491,6 +498,7 @@ Project prompt.
 		writeAgent(path.join(cwd, ".pi", "agents", "worker.md"), `---
 name: worker
 description: Project worker
+model: inherit
 ---
 Project prompt.
 `);
@@ -526,6 +534,7 @@ Project prompt.
 		const result = await resolveSubagentLaunchContract({
 			agent: "worker",
 			cwd,
+			agentScope: "both",
 			parentModel: { provider: "openai", id: "gpt-5-mini" },
 			availableModels: [
 				{ provider: "openai", id: "gpt-5-mini", fullId: "openai/gpt-5-mini" },

@@ -99,7 +99,7 @@ Review $1 with $ARGUMENTS
 		assert.equal(params?.model, undefined);
 		assert.equal(params?.skill, undefined);
 		assert.equal(params?.context, undefined);
-		assert.equal(params?.agentScope, "both");
+		assert.equal(params?.agentScope, "user");
 		assert.equal(params?.async, false);
 		const script = params?.workflowScript ?? "";
 		assert.match(script, /runs\.run\("prompt-1-native-run"/);
@@ -141,7 +141,7 @@ Fix from {previous}: $@
 		assert.equal(params?.agent, undefined);
 		assert.equal(params?.task, undefined);
 		assert.equal(params?.clarify, undefined);
-		assert.equal(params?.agentScope, "both");
+		assert.equal(params?.agentScope, "user");
 		assert.equal(params?.async, false);
 		const script = params?.workflowScript ?? "";
 		assert.match(script, /runs\.run\("prompt-1-native-analyze"/);

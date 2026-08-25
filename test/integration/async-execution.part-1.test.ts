@@ -305,12 +305,12 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		fs.writeFileSync(path.join(permissionExtDir, "package.json"), JSON.stringify({ name: "test", pi: { extensions: ["./src/index.ts"] } }), "utf-8");
 		const agentPath = path.join(tempDir, ".pi", "agents", `${agentName}.md`);
 		fs.mkdirSync(path.dirname(agentPath), { recursive: true });
-		fs.writeFileSync(agentPath, `---\nname: ${agentName}\ndescription: Contract comparison worker\npermissions:\n  write: ask\n---\n`, "utf-8");
+		fs.writeFileSync(agentPath, `---\nname: ${agentName}\ndescription: Contract comparison worker\nmodel: mock/test-model\npermissions:\n  write: ask\n---\n`, "utf-8");
 		try {
 			const discovered = discoverAgents(tempDir).agents.find((agent) => agent.name === agentName);
 			assert.ok(discovered, "expected temporary agent definition to be discovered");
 			// runSync and executeAsyncSingle sit below the executor step that applies the bridge.
-			const preflight = await resolveSubagentLaunchContract({ agent: agentName, cwd: tempDir, task, runId: "contract-preflight", intercomBridge: { mode: "off" } });
+			const preflight = await resolveSubagentLaunchContract({ agent: agentName, cwd: tempDir, task, runId: "contract-preflight", agentScope: "project", intercomBridge: { mode: "off" } });
 			assert.equal(preflight.ok, true);
 			assert.ok(preflight.contract.tools.extensionArgs.some((entry) => entry.endsWith(path.join("pi-permission-system", "src", "index.ts"))));
 
@@ -347,11 +347,11 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		const task = "Compare bridged async launch identity.";
 		const agentPath = path.join(tempDir, ".pi", "agents", `${agentName}.md`);
 		fs.mkdirSync(path.dirname(agentPath), { recursive: true });
-		fs.writeFileSync(agentPath, `---\nname: ${agentName}\ndescription: Bridged async worker\ntools:\n  - read\ncompletionGuard: false\n---\nAnswer from the task only.\n`, "utf-8");
+		fs.writeFileSync(agentPath, `---\nname: ${agentName}\ndescription: Bridged async worker\nmodel: mock/test-model\ntools:\n  - read\ncompletionGuard: false\n---\nAnswer from the task only.\n`, "utf-8");
 		const discovered = discoverAgents(tempDir).agents.find((agent) => agent.name === agentName);
 		assert.ok(discovered, "expected temporary agent definition to be discovered");
 
-		const preflight = await resolveSubagentLaunchContract({ agent: agentName, cwd: tempDir, task, runId: "bridged-async" });
+		const preflight = await resolveSubagentLaunchContract({ agent: agentName, cwd: tempDir, task, runId: "bridged-async", agentScope: "project" });
 		assert.equal(preflight.ok, true);
 		if (!preflight.ok) return;
 		assert.deepEqual(preflight.contract.intercomBridge, { mode: "always", active: true });
@@ -360,7 +360,7 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		mockPi.onCall({ output: "bridged async done" });
 		const launch = await makeAsyncExecutor([discovered]).execute(
 			"bridged-async-launch",
-			{ agent: agentName, task, async: true, runId: "bridged-async", acceptance: false },
+			{ agent: agentName, task, async: true, runId: "bridged-async", acceptance: false, agentScope: "project" },
 			new AbortController().signal,
 			undefined,
 			makeMinimalCtx(tempDir),
@@ -523,7 +523,7 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		const launch = executeAsyncSingle(`async-fallback-only-zero-candidates-${Date.now().toString(36)}`, {
 			agent: "worker",
 			task: "Do work",
-			agentConfig: makeAgent("worker", { fallbackModels: ["does-not-exist"], completionGuard: false }),
+			agentConfig: makeAgent("worker", { model: undefined, fallbackModels: ["does-not-exist"], completionGuard: false }),
 			availableModels: [{ provider: "mock", id: "fallback", fullId: "mock/fallback" }],
 			ctx: { pi: { events: { emit() {} } }, cwd: tempDir, currentSessionId: "session-1" },
 			artifactConfig: { enabled: false, includeInput: false, includeOutput: false, includeJsonl: false, includeMetadata: false, cleanupDays: 7 },
@@ -604,12 +604,11 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 
 	it("fails background single run closed before child launch when zero approved native worker candidates remain", { skip: !isAsyncAvailable() ? "jiti not available" : undefined }, async () => {
 		mockPi.onCall({ output: "should not spawn" });
-		recordRetryableModelFailure("openai/gpt-5-mini", "rate limit exceeded");
 		const id = `async-no-approved-model-${Date.now().toString(36)}`;
 		const launch = executeAsyncSingle(id, {
 			agent: "worker",
 			task: "Task",
-			agentConfig: makeAgent("worker", { model: "openai/gpt-5-mini", completionGuard: false }),
+			agentConfig: makeAgent("worker", { model: undefined, fallbackModels: [], completionGuard: false }),
 			availableModels: [{ provider: "openai", id: "gpt-5-mini", fullId: "openai/gpt-5-mini" }],
 			ctx: { pi: { events: { emit() {} } }, cwd: tempDir, currentSessionId: "session-1" },
 			artifactConfig: { enabled: false, includeInput: false, includeOutput: false, includeJsonl: false, includeMetadata: false, cleanupDays: 7 },

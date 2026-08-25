@@ -702,7 +702,7 @@ export function registerSlashCommands(
 				const existingReads = inline.reads.filter((read) => resolveExistingReadPaths([read], state.baseCwd).length > 0);
 				if (existingReads.length > 0) finalTask = `[Read from: ${existingReads.join(", ")}]\n\n${finalTask}`;
 			}
-			const child: Record<string, unknown> = { agent: agentName, task: finalTask, agentScope: "both" };
+			const child: Record<string, unknown> = { agent: agentName, task: finalTask, agentScope: "user" };
 			if (inline.output !== undefined) child.output = inline.output;
 			if (inline.outputMode !== undefined) child.outputMode = inline.outputMode;
 			if (inline.skill !== undefined) child.skill = inline.skill;

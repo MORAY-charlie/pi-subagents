@@ -1227,7 +1227,7 @@ describe("fork context execution wiring", { skip: !available ? "subagent executo
 
 		const result = await executor.execute(
 			"id",
-			{ agent: "echo", task, cwd: "worktree" },
+			{ agent: "echo", task, cwd: "worktree", agentScope: "project" },
 			new AbortController().signal,
 			undefined,
 			makeCtx(makeSessionManagerRecorder().manager),

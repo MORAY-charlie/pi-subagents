@@ -60,6 +60,9 @@ describe("public launch contract preflight", () => {
 		process.env.HOME = home;
 		process.env.USERPROFILE = home;
 		process.env.PI_CODING_AGENT_DIR = path.join(home, ".pi", "agent");
+		writeJson(path.join(process.env.PI_CODING_AGENT_DIR, "settings.json"), {
+			subagents: { defaultModel: "mock/test-model" },
+		});
 		clearSkillCache();
 		clearExclusions();
 	});
@@ -480,6 +483,30 @@ Project prompt.
 		assert.equal(result.ok, true);
 		assert.equal(result.contract.model, "gateway/parent-model");
 		assert.deepEqual(result.contract.modelCandidates, ["gateway/parent-model"]);
+	});
+
+	it("fails closed when an agent has no candidate model", async () => {
+		const cwd = path.join(tempDir, "repo-no-model");
+		fs.mkdirSync(cwd, { recursive: true });
+		writeAgent(path.join(cwd, ".pi", "agents", "worker.md"), `---
+name: worker
+description: Project worker
+---
+Project prompt.
+`);
+
+		writeJson(path.join(process.env.PI_CODING_AGENT_DIR!, "settings.json"), {});
+		const result = await resolveSubagentLaunchContract({
+			agent: "worker",
+			cwd,
+			availableModels: [{ provider: "test", id: "primary", fullId: "test/primary" }],
+		});
+
+		assert.equal(result.ok, false);
+		if (!result.ok) {
+			assert.equal(result.code, "no_model_candidates");
+			assert.match(result.message, /no approved worker model candidate/i);
+		}
 	});
 
 	it("uses subagents.defaultProvider when resolving launch model ids", async () => {

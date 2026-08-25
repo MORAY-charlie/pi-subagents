@@ -985,6 +985,9 @@ export function buildAsyncRunnerSteps(id: string, params: AsyncRunnerStepBuildPa
 					const resolved = applyThinkingSuffix(candidate, effectiveThinking, thinkingOverride !== undefined);
 					return resolved ? [resolved] : [];
 				});
+				if (modelCandidates.length === 0) {
+					throw new AsyncStartValidationError(`Agent '${a.name}' has no approved worker model candidate.`);
+				}
 				for (const candidate of modelCandidates) assertThinkingWithinCeiling({ model: candidate, configThinking: effectiveThinking, ceiling: thinkingCeiling, agent: a.name, runId: id });
 			} catch (error) {
 				throw new AsyncStartValidationError(error instanceof Error ? error.message : String(error));
@@ -1059,7 +1062,6 @@ export function buildAsyncRunnerSteps(id: string, params: AsyncRunnerStepBuildPa
 			...(thinkingCeiling ? { thinkingCeiling } : {}),
 			launchResolvedExtensions,
 			modelCandidates: externalRunner ? undefined : modelCandidates,
-			...(primaryModelFromParent ? { skipPrimaryModelVerification: true } : {}),
 			...(availableModels && availableModels.length > 0 ? { modelVerificationRegistry: availableModels } : {}),
 			...(ctx.modelResponseAliases ? { modelResponseAliases: ctx.modelResponseAliases } : {}),
 			tools: a.tools,
@@ -1798,6 +1800,9 @@ export function executeAsyncSingle(
 				const resolved = applyThinkingSuffix(candidate, effectiveThinking, params.thinkingOverride !== undefined);
 				return resolved ? [resolved] : [];
 			});
+			if (modelCandidates.length === 0) {
+				return formatAsyncStartError("single", `Agent '${agentConfig.name}' has no approved worker model candidate.`);
+			}
 			for (const candidate of modelCandidates) assertThinkingWithinCeiling({ model: candidate, configThinking: effectiveThinking, ceiling: thinkingCeiling, agent: agentConfig.name, runId: id });
 		} catch (error) {
 			return formatAsyncStartError("single", error instanceof Error ? error.message : String(error));

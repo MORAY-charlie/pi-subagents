@@ -73,7 +73,7 @@ function makeExecutor(cwd: string) {
 		getSubagentSessionRoot: () => cwd,
 		expandTilde: (value: string) => value,
 		discoverAgents: () => ({
-			agents: [{ name: "tester", description: "Tool-heavy test agent" }],
+			agents: [{ name: "tester", description: "Tool-heavy test agent", model: "mock/test-model" }],
 		}),
 	});
 }

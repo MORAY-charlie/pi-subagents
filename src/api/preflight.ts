@@ -45,6 +45,7 @@ export type SubagentLaunchContractReasonCode =
 	| "unsupported_mode"
 	| "restricted_agent"
 	| "thinking_ceiling"
+	| "no_model_candidates"
 	| "invalid_extension_bindings"
 	| "invalid_intercom_bridge";
 
@@ -389,6 +390,11 @@ export async function resolveSubagentLaunchContract(input: SubagentLaunchContrac
 			origin: modelOrigin,
 		})
 			.map((candidate) => applyThinkingSuffix(candidate, effectiveThinkingConfig, input.thinking !== undefined) ?? candidate);
+	if (!externalRunner && modelCandidates.length === 0) {
+		const message = `Agent '${agent.name}' has no approved worker model candidate.`;
+		diagnostics.push({ code: "no_model_candidates", severity: "error", message });
+		return { ok: false, code: "no_model_candidates", message, diagnostics };
+	}
 	if (!externalRunner) {
 		try {
 			assertThinkingWithinCeiling({ model, configThinking: effectiveThinkingConfig, ceiling: thinkingCeiling, agent: agent.name, runId });

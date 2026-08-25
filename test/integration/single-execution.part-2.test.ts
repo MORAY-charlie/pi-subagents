@@ -64,6 +64,7 @@ import { createWorktrees } from "../../src/runs/shared/worktree.ts";
 import { resolveAsyncResumeTarget } from "../../src/runs/background/async-resume.ts";
 import { createResultWatcher } from "../../src/runs/background/result-watcher.ts";
 import { clearExclusions, recordModelFailure } from "../../src/runs/shared/model-exclusions.ts";
+import { recordRetryableModelFailure } from "../../src/runs/shared/model-fallback.ts";
 import { createWorkflowChildPermit, workflowChildPermitConsumed } from "../../src/shared/workflow-child-permit.ts";
 import { toSubagentDelegationExecutionParams } from "../../src/slash/delegation-adapters.ts";
 import { registerRequiredChildExtensions } from "../../src/api/required-child-extensions.ts";
@@ -2588,6 +2589,20 @@ if (!fs.existsSync(${JSON.stringify(holdPath)})) { console.log('{}'); } else {
 		assert.equal(mockPi.callCount(), 1);
 	});
 
+	it("fails closed before child launch when zero approved native worker candidates remain", async () => {
+		mockPi.onCall({ output: "Should not be called" });
+		recordRetryableModelFailure("openai/gpt-5-mini", "rate limit exceeded");
+		const agents = [makeAgent("echo", { model: "openai/gpt-5-mini" })];
+
+		const result = await runSync(tempDir, agents, "echo", "Task", {
+			availableModels: [{ provider: "openai", id: "gpt-5-mini", fullId: "openai/gpt-5-mini" }],
+		});
+
+		assert.equal(result.exitCode, 1);
+		assert.match(result.error ?? "", /no approved worker model candidate/i);
+		assert.equal(mockPi.callCount(), 0);
+	});
+
 	it("model override from options takes precedence", async () => {
 		mockPi.onCall({ output: "Done" });
 		const agents = [makeAgent("echo", { model: "anthropic/claude-sonnet-4" })];
@@ -2598,6 +2613,9 @@ if (!fs.existsSync(${JSON.stringify(holdPath)})) { console.log('{}'); } else {
 
 		assert.equal(result.exitCode, 0);
 		assert.equal(result.model, "openai/gpt-4o");
+		const args = readAllCallArgs()[0]!;
+		assert.equal(args[args.indexOf("--model") + 1], "openai/gpt-4o");
+		assert.equal(mockPi.callCount(), 1);
 	});
 
 	it("rejects an unresolved agent model before spawning Pi", async () => {
@@ -3686,7 +3704,7 @@ if (!fs.existsSync(${JSON.stringify(holdPath)})) { console.log('{}'); } else {
 		const reviewer = discoverAgents(tempDir, "project").agents.find((agent) => agent.name === "reviewer");
 		assert.ok(reviewer, "expected bundled reviewer");
 		assert.equal(reviewer.defaultReads, undefined);
-		const executor = makeExecutor([reviewer]);
+		const executor = makeExecutor([{ ...reviewer, model: "mock/test-model" }]);
 
 		await executor.execute(
 			"single-reviewer-without-chain-artifacts",

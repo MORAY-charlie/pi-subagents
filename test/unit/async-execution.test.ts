@@ -12,6 +12,7 @@ import { registerRequiredChildExtensions } from "../../src/api/required-child-ex
 const agent = (name: string, toolBudget?: AgentConfig["toolBudget"]): AgentConfig => ({
 	name,
 	description: `${name} agent`,
+	model: "mock/test-model",
 	systemPromptMode: "replace",
 	inheritProjectContext: false,
 	inheritSkills: false,

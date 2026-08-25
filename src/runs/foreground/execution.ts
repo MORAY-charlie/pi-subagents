@@ -1828,6 +1828,18 @@ async function runSyncCompletionInner(
 			error,
 		}, options.context));
 	}
+	if (candidates.length === 0) {
+		const message = `Agent '${agent.name}' has no approved worker model candidate.`;
+		return redactResultPrompt(withRunContext({
+			index: options.index ?? 0,
+			agent: agent.name,
+			task,
+			exitCode: 1,
+			messages: [],
+			usage: emptyUsage(),
+			error: message,
+		}, options.context));
+	}
 	try {
 		for (const candidate of candidates) {
 			const model = applyThinkingSuffix(candidate, options.thinkingOverride ?? agent.thinking, options.thinkingOverride !== undefined);
@@ -1916,7 +1928,7 @@ async function runSyncCompletionInner(
 		},
 	};
 	let lastResult: SingleResult | undefined;
-	const modelsToTry = candidates.length > 0 ? candidates : [undefined];
+	const modelsToTry = candidates;
 	let recoveryState: LogicalRecoveryState = "unused";
 	let readonlyExpected: SettledReadonlyEvidence | undefined;
 	let readonlyModel: string | undefined;

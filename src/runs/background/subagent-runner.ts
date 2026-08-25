@@ -1049,11 +1049,25 @@ export async function runSingleStepInner(
 		alignForkedSessionCwd(step.sessionFile, effectiveCwd);
 	}
 
-	const candidates = step.modelCandidates !== undefined
-		? step.modelCandidates.length > 0 ? step.modelCandidates : [undefined]
-		: step.model
-			? [step.model]
-			: [undefined];
+	const candidates = (
+		step.modelCandidates !== undefined
+			? step.modelCandidates
+			: step.model
+				? [step.model]
+				: []
+	).filter((candidate): candidate is string => typeof candidate === "string" && candidate.trim().length > 0);
+	if (candidates.length === 0) {
+		const message = `Agent '${step.agent}' has no approved worker model candidate.`;
+		return omitUndefinedProperties({
+			agent: step.agent,
+			context: step.context,
+			output: message,
+			error: message,
+			exitCode: 1,
+			artifactPaths,
+			thinkingCeiling: step.thinkingCeiling,
+		});
+	}
 	const attemptedModels: string[] = [];
 	let capabilityAudit: import("../shared/capability-ceiling.ts").SubagentCapabilityAudit | undefined;
 	let launchResolvedExtensions = step.launchResolvedExtensions;
@@ -3459,11 +3473,17 @@ export async function runSubagent(
 					const thinkingOverride = step.thinkingOverrides?.[itemIndex];
 					const model = thinkingOverride ? applyThinkingSuffix(step.parallel.model, thinkingOverride, true) : step.parallel.model;
 					const configThinking = thinkingOverride ? thinkingOverride : step.parallel.thinking;
-					const candidates = step.parallel.modelCandidates !== undefined
-						? step.parallel.modelCandidates.length > 0
-							? step.parallel.modelCandidates.map((candidate) => thinkingOverride ? applyThinkingSuffix(candidate, thinkingOverride, true) ?? candidate : candidate)
-							: [undefined]
-						: model ? [model] : [undefined];
+					const candidates = (
+						step.parallel.modelCandidates !== undefined
+							? step.parallel.modelCandidates.flatMap((candidate) => {
+								const resolved = thinkingOverride ? applyThinkingSuffix(candidate, thinkingOverride, true) ?? candidate : candidate;
+								return resolved ? [resolved] : [];
+							})
+							: model ? [model] : []
+					).filter((candidate): candidate is string => typeof candidate === "string" && candidate.trim().length > 0);
+					if (candidates.length === 0) {
+						throw new DynamicFanoutError(`Agent '${step.parallel.agent}' has no approved worker model candidate.`);
+					}
 					for (const candidate of candidates) {
 						assertThinkingWithinCeiling({ model: candidate, configThinking, ceiling: step.parallel.thinkingCeiling, agent: step.parallel.agent, runId: id });
 					}

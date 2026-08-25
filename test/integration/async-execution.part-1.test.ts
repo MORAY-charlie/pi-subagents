@@ -11,6 +11,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import fsDefault from "node:fs";
 import * as fs from "node:fs";
+import { spawnSync } from "node:child_process";
 import { syncBuiltinESMExports } from "node:module";
 import * as path from "node:path";
 import { events, makeAgent, makeMinimalCtx, resolveMockPiCallArgs } from "../support/helpers.ts";
@@ -22,6 +23,7 @@ import { discoverAgents } from "../../src/agents/agents.ts";
 import { runSync } from "../../src/runs/foreground/execution.ts";
 import { ACTIVE_ASYNC_CAPACITY_DIR, acquireActiveAsyncCapacity, activeAsyncCapacitySessionKey, getActiveAsyncCapacitySnapshot } from "../../src/runs/background/active-async-capacity.ts";
 import { recordModelFailure } from "../../src/runs/shared/model-exclusions.ts";
+import { recordRetryableModelFailure } from "../../src/runs/shared/model-fallback.ts";
 import type { AsyncExecutionResult, AsyncResultPayload, AsyncStatusPayload, MockPiCallRecord } from "../support/async-execution-fixture.ts";
 import {
 	installAsyncExecutionHooks, mockAssistantMessage, available, isAsyncAvailable,
@@ -598,6 +600,92 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		assert.equal(launch.isError, true);
 		assert.match(launch.content[0]?.text ?? "", /max.*xhigh.*worker/);
 		assert.equal(mockPi.callCount(), 0);
+	});
+
+	it("fails background single run closed before child launch when zero approved native worker candidates remain", { skip: !isAsyncAvailable() ? "jiti not available" : undefined }, async () => {
+		mockPi.onCall({ output: "should not spawn" });
+		recordRetryableModelFailure("openai/gpt-5-mini", "rate limit exceeded");
+		const id = `async-no-approved-model-${Date.now().toString(36)}`;
+		const launch = executeAsyncSingle(id, {
+			agent: "worker",
+			task: "Task",
+			agentConfig: makeAgent("worker", { model: "openai/gpt-5-mini", completionGuard: false }),
+			availableModels: [{ provider: "openai", id: "gpt-5-mini", fullId: "openai/gpt-5-mini" }],
+			ctx: { pi: { events: { emit() {} } }, cwd: tempDir, currentSessionId: "session-1" },
+			artifactConfig: { enabled: false, includeInput: false, includeOutput: false, includeJsonl: false, includeMetadata: false, cleanupDays: 7 },
+			shareEnabled: false,
+			sessionRoot: path.join(tempDir, "sessions"),
+			maxSubagentDepth: 2,
+			acceptance: false,
+		});
+
+		assert.equal(launch.isError, true);
+		assert.match(launch.content[0]?.text ?? "", /no approved worker model candidate/i);
+		assert.equal(fs.existsSync(path.join(RESULTS_DIR, `${id}.json`)), false);
+		assert.equal(mockPi.callCount(), 0);
+	});
+
+	it("background runner rejects persisted/malformed steps with neither modelCandidates nor model", { skip: !isAsyncAvailable() ? "jiti not available" : undefined }, async () => {
+		mockPi.onCall({ output: "should not spawn" });
+		const id = `async-malformed-step-${Date.now().toString(36)}`;
+		const asyncDir = path.join(tempDir, `async-${id}`);
+		fs.mkdirSync(asyncDir, { recursive: true });
+		const resultPath = path.join(RESULTS_DIR, `${id}.json`);
+		const configPath = path.join(asyncDir, "config.json");
+		const runnerConfig = {
+			id,
+			sessionId: "session-1",
+			steps: [
+				{
+					parentSessionId: "session-1",
+					agent: "worker",
+					task: "Task with neither modelCandidates nor model",
+					cwd: tempDir,
+				},
+			],
+			resultPath,
+			cwd: tempDir,
+			placeholder: "{previous}",
+			maxOutput: 10_000,
+			asyncDir,
+		};
+		fs.writeFileSync(configPath, JSON.stringify(runnerConfig), "utf-8");
+
+		const runnerScript = path.resolve("src/runs/background/subagent-runner.ts");
+		const loaderScript = path.resolve("test/support/register-loader.mjs");
+		spawnSync(process.execPath, ["--experimental-strip-types", "--import", loaderScript, runnerScript, configPath], {
+			cwd: tempDir,
+			encoding: "utf-8",
+		});
+
+		const payload = await readAsyncPayload(id);
+		assert.equal(payload.success, false);
+		assert.match(payload.results[0]?.error ?? "", /no approved worker model candidate/i);
+		assert.equal(mockPi.callCount(), 0);
+	});
+
+	it("launches background single run with valid explicit candidate model", { skip: !isAsyncAvailable() ? "jiti not available" : undefined }, async () => {
+		mockPi.onCall({ output: "explicit model done" });
+		const id = `async-valid-model-${Date.now().toString(36)}`;
+		const launch = executeAsyncSingle(id, {
+			agent: "worker",
+			task: "Task",
+			agentConfig: makeAgent("worker", { model: "anthropic/claude-sonnet-4", completionGuard: false }),
+			availableModels: [{ provider: "anthropic", id: "claude-sonnet-4", fullId: "anthropic/claude-sonnet-4" }],
+			ctx: { pi: { events: { emit() {} } }, cwd: tempDir, currentSessionId: "session-1" },
+			artifactConfig: { enabled: false, includeInput: false, includeOutput: false, includeJsonl: false, includeMetadata: false, cleanupDays: 7 },
+			shareEnabled: false,
+			sessionRoot: path.join(tempDir, "sessions"),
+			maxSubagentDepth: 2,
+			acceptance: false,
+		});
+
+		assert.equal(launch.isError, undefined);
+		const call = await waitForMockPiCall(mockPi, 0);
+		assert.equal(call.args[call.args.indexOf("--model") + 1], "anthropic/claude-sonnet-4");
+		const payload = await readAsyncPayload(id);
+		assert.equal(payload.success, true);
+		assert.equal(mockPi.callCount(), 1);
 	});
 
 	it("rejects implementation workers without mutation-capable tools before spawn", { skip: !isAsyncAvailable() ? "jiti not available" : undefined }, () => {

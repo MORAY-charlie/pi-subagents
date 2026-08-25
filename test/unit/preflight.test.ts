@@ -58,6 +58,9 @@ describe("public launch contract preflight", () => {
 		process.env.HOME = home;
 		process.env.USERPROFILE = home;
 		process.env.PI_CODING_AGENT_DIR = path.join(home, ".pi", "agent");
+		writeJson(path.join(process.env.PI_CODING_AGENT_DIR, "settings.json"), {
+			subagents: { defaultModel: "mock/test-model" },
+		});
 		clearSkillCache();
 	});
 
@@ -254,7 +257,7 @@ Project prompt.
 		);
 	});
 
-	it("trusts an inherited parent model outside the host registry", async () => {
+	it("rejects an inherited parent model outside the host registry", async () => {
 		const cwd = path.join(tempDir, "repo-parent-model");
 		fs.mkdirSync(cwd, { recursive: true });
 		writeAgent(path.join(cwd, ".pi", "agents", "worker.md"), `---
@@ -264,6 +267,7 @@ description: Project worker
 Project prompt.
 `);
 
+		writeJson(path.join(process.env.PI_CODING_AGENT_DIR!, "settings.json"), {});
 		const result = await resolveSubagentLaunchContract({
 			agent: "worker",
 			cwd,
@@ -271,9 +275,11 @@ Project prompt.
 			availableModels: [{ provider: "test", id: "primary", fullId: "test/primary" }],
 		});
 
-		assert.equal(result.ok, true);
-		assert.equal(result.contract.model, "gateway/parent-model");
-		assert.deepEqual(result.contract.modelCandidates, ["gateway/parent-model"]);
+		assert.equal(result.ok, false);
+		if (!result.ok) {
+			assert.equal(result.code, "no_model_candidates");
+			assert.match(result.message, /no approved worker model candidate/i);
+		}
 	});
 
 	it("uses subagents.defaultProvider when resolving launch model ids", async () => {

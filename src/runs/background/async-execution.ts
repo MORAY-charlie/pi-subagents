@@ -813,7 +813,7 @@ export function buildAsyncRunnerSteps(id: string, params: AsyncRunnerStepBuildPa
 
 		const modelScopes = resolveModelScopesForAgent(ctx.modelScope, a.name, ctx.currentModel);
 		const primaryModelFromParent = inheritsParentModel(s.model, a.model, ctx.currentModel);
-		const primaryModel = externalRunner ? undefined : resolveEffectiveSubagentModel(
+		const primaryModel = externalRunner || primaryModelFromParent ? undefined : resolveEffectiveSubagentModel(
 			s.model,
 			a.model,
 			ctx.currentModel,
@@ -840,11 +840,13 @@ export function buildAsyncRunnerSteps(id: string, params: AsyncRunnerStepBuildPa
 		const permissionRules = resolvePermissionRules(ctx.permissions, a.permissions);
 		const modelCandidates = externalRunner ? [] : buildModelCandidates(primaryModel, a.fallbackModels, availableModels, a.modelProvider ?? ctx.currentModelProvider, {
 			scope: modelScopes,
-			primaryModelFromParent,
 		}).flatMap((candidate) => {
 			const resolved = applyThinkingSuffix(candidate, effectiveThinking, thinkingOverride !== undefined);
 			return resolved ? [resolved] : [];
 		});
+		if (!externalRunner && modelCandidates.length === 0) {
+			throw new AsyncStartValidationError(`Agent '${a.name}' has no approved worker model candidate.`);
+		}
 		if (!externalRunner) {
 			try {
 				for (const candidate of modelCandidates) assertThinkingWithinCeiling({ model: candidate, configThinking: effectiveThinking, ceiling: thinkingCeiling, agent: a.name, runId: id });
@@ -908,7 +910,6 @@ export function buildAsyncRunnerSteps(id: string, params: AsyncRunnerStepBuildPa
 			...(thinkingCeiling ? { thinkingCeiling } : {}),
 			launchResolvedExtensions,
 			modelCandidates: externalRunner ? undefined : modelCandidates,
-			...(primaryModelFromParent ? { skipPrimaryModelVerification: true } : {}),
 			...(availableModels && availableModels.length > 0 ? { modelVerificationRegistry: availableModels } : {}),
 			tools: a.tools,
 			extensions: a.extensions,
@@ -1496,8 +1497,10 @@ export function executeAsyncSingle(
 		: "";
 	const taskText = readsInstruction + taskWithOutputInstruction;
 	const modelScopes = resolveModelScopesForAgent(ctx.modelScope, agentConfig.name, ctx.currentModel);
-	const primaryModel = externalRunner ? undefined : params.modelOverrideFromParent
-		? params.modelOverride
+	const primaryModelFromParent = params.modelOverrideFromParent === true
+		|| inheritsParentModel(params.modelOverride, agentConfig.model, ctx.currentModel);
+	const primaryModel = externalRunner || primaryModelFromParent
+		? undefined
 		: resolveSubagentModelOverride(
 			params.modelOverride ?? agentConfig.model,
 			ctx.currentModel,
@@ -1545,12 +1548,14 @@ export function executeAsyncSingle(
 		? []
 		: buildModelCandidates(primaryModel, agentConfig.fallbackModels, availableModels, agentConfig.modelProvider ?? ctx.currentModelProvider, {
 			scope: modelScopes,
-			primaryModelFromParent: params.modelOverrideFromParent,
 		})
 			.flatMap((candidate) => {
 				const resolved = applyThinkingSuffix(candidate, effectiveThinking, params.thinkingOverride !== undefined);
 				return resolved ? [resolved] : [];
 			});
+	if (!externalRunner && modelCandidates.length === 0) {
+		return formatAsyncStartError("single", `Agent '${agentConfig.name}' has no approved worker model candidate.`);
+	}
 	if (!externalRunner) {
 		try {
 			for (const candidate of modelCandidates) assertThinkingWithinCeiling({ model: candidate, configThinking: effectiveThinking, ceiling: thinkingCeiling, agent: agentConfig.name, runId: id });
@@ -1635,7 +1640,7 @@ export function executeAsyncSingle(
 		...(model ? { model } : {}),
 		...(params.fast ?? recoveryAgentConfig.fast ? { fast: params.fast ?? recoveryAgentConfig.fast } : {}),
 		...(recoveryAgentConfig.modelProvider ? { modelProvider: recoveryAgentConfig.modelProvider } : {}),
-		...(params.modelOverrideFromParent ? { modelOverrideFromParent: true } : {}),
+		...(primaryModelFromParent ? { modelOverrideFromParent: true } : {}),
 		...(recoveryAgentConfig.fallbackModels ? { fallbackModels: [...recoveryAgentConfig.fallbackModels] } : {}),
 		...(effectiveThinking ? { thinking: resolveEffectiveThinking(model, effectiveThinking) } : {}),
 		...(thinkingCeiling ? { thinkingCeiling } : {}),
@@ -1698,7 +1703,6 @@ export function executeAsyncSingle(
 						thinking: resolveEffectiveThinking(model, effectiveThinking),
 						...(thinkingCeiling ? { thinkingCeiling } : {}),
 						modelCandidates,
-						...(params.modelOverrideFromParent ? { skipPrimaryModelVerification: true } : {}),
 						...(availableModels && availableModels.length > 0 ? { modelVerificationRegistry: availableModels } : {}),
 						tools: agentConfig.tools,
 						extensions: agentConfig.extensions,

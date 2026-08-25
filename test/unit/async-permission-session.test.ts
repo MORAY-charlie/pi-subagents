@@ -8,6 +8,7 @@ function makeAgent(name: string): AgentConfig {
 	return {
 		name,
 		description: `${name} agent`,
+		model: "mock/test-model",
 		systemPrompt: "Do work",
 		systemPromptMode: "replace",
 		inheritProjectContext: false,
@@ -74,6 +75,30 @@ describe("async permission forwarding session identity", () => {
 		assert.equal(staticWorker.sessionFile, "/tmp/static-worker.jsonl");
 		assert.equal(staticWorker.model, "anthropic/claude-sonnet-4-5:off");
 		assert.equal(staticWorker.thinking, "off");
+	});
+
+	it("rejects dynamic fanout planning when no approved worker model remains", () => {
+		const built = buildAsyncRunnerSteps("run-no-model", {
+			chain: [
+				{ agent: "source", task: "produce targets", as: "targets" },
+				{
+					expand: { from: { output: "targets", path: "/items" }, maxItems: 2 },
+					parallel: { agent: "reviewer", task: "Review {item.path}" },
+					collect: { as: "reviews" },
+				},
+			],
+			agents: [makeAgent("source"), { ...makeAgent("reviewer"), model: undefined }],
+			ctx: {
+				pi: {} as never,
+				cwd: "/tmp/project",
+				currentSessionId: "/tmp/parent-session.jsonl",
+			},
+			maxSubagentDepth: 1,
+			asyncDir: "/tmp/async-run",
+		});
+
+		assert.ok("error" in built);
+		assert.match(built.error, /no approved worker model candidate/i);
 	});
 
 	it("applies thinking overrides to async fallback candidates", () => {

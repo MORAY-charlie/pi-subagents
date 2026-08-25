@@ -40,6 +40,7 @@ export type SubagentLaunchContractReasonCode =
 	| "unsupported_mode"
 	| "restricted_agent"
 	| "thinking_ceiling"
+	| "no_model_candidates"
 	| "invalid_extension_bindings";
 
 export interface SubagentLaunchContractDiagnostic {
@@ -296,7 +297,8 @@ export async function resolveSubagentLaunchContract(input: SubagentLaunchContrac
 	const availableModels = normalizeAvailableModels(input.availableModels);
 	const preferredProvider = agent.modelProvider ?? input.preferredProvider ?? input.parentModel?.provider;
 	const modelScopes = resolveModelScopesForAgent(discovered.modelScope, agent.name, input.parentModel);
-	const primaryModel = externalRunner
+	const primaryModelFromParent = inheritsParentModel(input.model, agent.model, input.parentModel);
+	const primaryModel = externalRunner || primaryModelFromParent
 		? undefined
 		: resolveEffectiveSubagentModel(input.model, agent.model, input.parentModel, availableModels, preferredProvider, { scope: modelScopes });
 	const effectiveThinkingConfig = input.thinking !== undefined ? input.thinking : agent.thinking;
@@ -311,9 +313,13 @@ export async function resolveSubagentLaunchContract(input: SubagentLaunchContrac
 		? []
 		: buildModelCandidates(primaryModel, agent.fallbackModels, availableModels, preferredProvider, {
 			scope: modelScopes,
-			primaryModelFromParent: inheritsParentModel(input.model, agent.model, input.parentModel),
 		})
 			.map((candidate) => applyThinkingSuffix(candidate, effectiveThinkingConfig, input.thinking !== undefined) ?? candidate);
+	if (!externalRunner && modelCandidates.length === 0) {
+		const message = `Agent '${agent.name}' has no approved worker model candidate.`;
+		diagnostics.push({ code: "no_model_candidates", severity: "error", message });
+		return { ok: false, code: "no_model_candidates", message, diagnostics };
+	}
 	if (!externalRunner) {
 		try {
 			assertThinkingWithinCeiling({ model, configThinking: effectiveThinkingConfig, ceiling: thinkingCeiling, agent: agent.name, runId });

@@ -82,6 +82,7 @@ describe("Orca progress-tab observer", () => {
 			steps: [{
 				agent: "worker",
 				task: "Read the repository",
+				model: "mock/test-model",
 				systemPrompt: "Use native Pi",
 				systemPromptMode: "replace",
 				inheritProjectContext: false,

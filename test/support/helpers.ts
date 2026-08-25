@@ -73,6 +73,7 @@ export function makeAgentConfigs(names: string[]): AgentConfig[] {
 	return names.map((name) => ({
 		name,
 		description: `Test agent: ${name}`,
+		model: "mock/test-model",
 		systemPrompt: "",
 		systemPromptMode: "replace",
 		inheritProjectContext: false,
@@ -84,6 +85,7 @@ export function makeAgent(name: string, overrides: Partial<AgentConfig> = {}): A
 	return {
 		name,
 		description: `Test agent: ${name}`,
+		model: "mock/test-model",
 		systemPrompt: "",
 		systemPromptMode: "replace",
 		inheritProjectContext: false,

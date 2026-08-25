@@ -26,6 +26,8 @@ import { resolveSubagentLaunchContract } from "../../src/api/preflight.ts";
 import { discoverAgents } from "../../src/agents/agents.ts";
 import { runSync } from "../../src/runs/foreground/execution.ts";
 import { ACTIVE_ASYNC_CAPACITY_DIR, acquireActiveAsyncCapacity, activeAsyncCapacitySessionKey } from "../../src/runs/background/active-async-capacity.ts";
+import { clearExclusions } from "../../src/runs/shared/model-exclusions.ts";
+import { recordRetryableModelFailure } from "../../src/runs/shared/model-fallback.ts";
 
 interface LaunchResolvedExtensions {
 	version?: number;
@@ -458,9 +460,11 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 	beforeEach(() => {
 		tempDir = createTempDir();
 		mockPi.reset();
+		clearExclusions();
 	});
 
 	afterEach(() => {
+		clearExclusions();
 		removeTempDir(tempDir);
 	});
 
@@ -625,7 +629,7 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		fs.writeFileSync(path.join(permissionExtDir, "package.json"), JSON.stringify({ name: "test", pi: { extensions: ["./src/index.ts"] } }), "utf-8");
 		const agentPath = path.join(tempDir, ".pi", "agents", `${agentName}.md`);
 		fs.mkdirSync(path.dirname(agentPath), { recursive: true });
-		fs.writeFileSync(agentPath, `---\nname: ${agentName}\ndescription: Contract comparison worker\npermissions:\n  write: ask\n---\n`, "utf-8");
+		fs.writeFileSync(agentPath, `---\nname: ${agentName}\ndescription: Contract comparison worker\nmodel: mock/test-model\npermissions:\n  write: ask\n---\n`, "utf-8");
 		try {
 			const discovered = discoverAgents(tempDir).agents.find((agent) => agent.name === agentName);
 			assert.ok(discovered, "expected temporary agent definition to be discovered");
@@ -731,6 +735,92 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		assert.equal(launch.isError, true);
 		assert.match(launch.content[0]?.text ?? "", /max.*xhigh.*worker/);
 		assert.equal(mockPi.callCount(), 0);
+	});
+
+	it("fails background single run closed before child launch when zero approved native worker candidates remain", { skip: !isAsyncAvailable() ? "jiti not available" : undefined }, async () => {
+		mockPi.onCall({ output: "should not spawn" });
+		recordRetryableModelFailure("openai/gpt-5-mini", "rate limit exceeded");
+		const id = `async-no-approved-model-${Date.now().toString(36)}`;
+		const launch = executeAsyncSingle(id, {
+			agent: "worker",
+			task: "Task",
+			agentConfig: makeAgent("worker", { model: "openai/gpt-5-mini", completionGuard: false }),
+			availableModels: [{ provider: "openai", id: "gpt-5-mini", fullId: "openai/gpt-5-mini" }],
+			ctx: { pi: { events: { emit() {} } }, cwd: tempDir, currentSessionId: "session-1" },
+			artifactConfig: { enabled: false, includeInput: false, includeOutput: false, includeJsonl: false, includeMetadata: false, cleanupDays: 7 },
+			shareEnabled: false,
+			sessionRoot: path.join(tempDir, "sessions"),
+			maxSubagentDepth: 2,
+			acceptance: false,
+		});
+
+		assert.equal(launch.isError, true);
+		assert.match(launch.content[0]?.text ?? "", /no approved worker model candidate/i);
+		assert.equal(fs.existsSync(path.join(RESULTS_DIR, `${id}.json`)), false);
+		assert.equal(mockPi.callCount(), 0);
+	});
+
+	it("background runner rejects persisted/malformed steps with neither modelCandidates nor model", { skip: !isAsyncAvailable() ? "jiti not available" : undefined }, async () => {
+		mockPi.onCall({ output: "should not spawn" });
+		const id = `async-malformed-step-${Date.now().toString(36)}`;
+		const asyncDir = path.join(tempDir, `async-${id}`);
+		fs.mkdirSync(asyncDir, { recursive: true });
+		const resultPath = path.join(RESULTS_DIR, `${id}.json`);
+		const configPath = path.join(asyncDir, "config.json");
+		const runnerConfig = {
+			id,
+			sessionId: "session-1",
+			steps: [
+				{
+					parentSessionId: "session-1",
+					agent: "worker",
+					task: "Task with neither modelCandidates nor model",
+					cwd: tempDir,
+				},
+			],
+			resultPath,
+			cwd: tempDir,
+			placeholder: "{previous}",
+			maxOutput: 10_000,
+			asyncDir,
+		};
+		fs.writeFileSync(configPath, JSON.stringify(runnerConfig), "utf-8");
+
+		const runnerScript = path.resolve("src/runs/background/subagent-runner.ts");
+		const loaderScript = path.resolve("test/support/register-loader.mjs");
+		spawnSync(process.execPath, ["--experimental-strip-types", "--import", loaderScript, runnerScript, configPath], {
+			cwd: tempDir,
+			encoding: "utf-8",
+		});
+
+		const payload = await readAsyncPayload(id);
+		assert.equal(payload.success, false);
+		assert.match(payload.results[0]?.error ?? "", /no approved worker model candidate/i);
+		assert.equal(mockPi.callCount(), 0);
+	});
+
+	it("launches background single run with valid explicit candidate model", { skip: !isAsyncAvailable() ? "jiti not available" : undefined }, async () => {
+		mockPi.onCall({ output: "explicit model done" });
+		const id = `async-valid-model-${Date.now().toString(36)}`;
+		const launch = executeAsyncSingle(id, {
+			agent: "worker",
+			task: "Task",
+			agentConfig: makeAgent("worker", { model: "anthropic/claude-sonnet-4", completionGuard: false }),
+			availableModels: [{ provider: "anthropic", id: "claude-sonnet-4", fullId: "anthropic/claude-sonnet-4" }],
+			ctx: { pi: { events: { emit() {} } }, cwd: tempDir, currentSessionId: "session-1" },
+			artifactConfig: { enabled: false, includeInput: false, includeOutput: false, includeJsonl: false, includeMetadata: false, cleanupDays: 7 },
+			shareEnabled: false,
+			sessionRoot: path.join(tempDir, "sessions"),
+			maxSubagentDepth: 2,
+			acceptance: false,
+		});
+
+		assert.equal(launch.isError, undefined);
+		const call = await waitForMockPiCall(mockPi, 0);
+		assert.equal(call.args[call.args.indexOf("--model") + 1], "anthropic/claude-sonnet-4");
+		const payload = await readAsyncPayload(id);
+		assert.equal(payload.success, true);
+		assert.equal(mockPi.callCount(), 1);
 	});
 
 	it("rejects implementation workers without mutation-capable tools before spawn", { skip: !isAsyncAvailable() ? "jiti not available" : undefined }, () => {
@@ -4179,8 +4269,8 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		assert.match(payload.workflow.value.output, new RegExp(workflowId));
 	});
 
-	it("async executor keeps the last parent session model after continuation drops ctx.model", { skip: !isAsyncAvailable() || !createSubagentExecutor ? "jiti or executor not available" : undefined }, async () => {
-		mockPi.onCall({ output: "Done asynchronously" });
+	it("async executor rejects a remembered parent model when the worker has no explicit model", { skip: !isAsyncAvailable() || !createSubagentExecutor ? "jiti or executor not available" : undefined }, async () => {
+		mockPi.onCall({ output: "should not spawn" });
 		const state = {
 			baseCwd: tempDir,
 			currentSessionId: null,
@@ -4196,7 +4286,7 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 			tempArtifactsDir: tempDir,
 			getSubagentSessionRoot: () => path.join(tempDir, "sessions"),
 			expandTilde: (p: string) => p,
-			discoverAgents: () => ({ agents: [makeAgent("worker")] }),
+			discoverAgents: () => ({ agents: [makeAgent("worker", { model: undefined })] }),
 		});
 		const initialCtx = makeMinimalCtx(tempDir);
 		initialCtx.sessionManager.getSessionId = () => "session-continued";
@@ -4212,26 +4302,21 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 			undefined,
 			continuedCtx,
 		) as AsyncExecutionResult;
-		assert.equal(launch.isError, undefined);
-		assert.ok(launch.details.asyncId);
-
-		const payload = await readAsyncPayload(launch.details.asyncId);
-		assert.equal(payload.success, true);
-		assert.equal(payload.results[0]?.model, "deepseek/deepseek-v4-flash");
-		const args = readMockPiArgs(mockPi, 0);
-		assert.equal(args[args.indexOf("--model") + 1], "deepseek/deepseek-v4-flash");
+		assert.equal(launch.isError, true);
+		assert.match(launch.content[0]?.text ?? "", /no approved worker model candidate/i);
+		assert.equal(mockPi.callCount(), 0);
 	});
 
 
 
-	it("background single runs inherit the parent session model when no model is set", { skip: !isAsyncAvailable() ? "jiti not available" : undefined }, async () => {
-		mockPi.onCall({ output: "Done asynchronously" });
+	it("background single runs reject implicit parent-model inheritance", { skip: !isAsyncAvailable() ? "jiti not available" : undefined }, () => {
+		mockPi.onCall({ output: "should not spawn" });
 
 		const id = `async-single-parent-model-${Date.now().toString(36)}`;
-		executeAsyncSingle(id, {
+		const launch = executeAsyncSingle(id, {
 			agent: "worker",
 			task: "Do work",
-			agentConfig: makeAgent("worker"),
+			agentConfig: makeAgent("worker", { model: undefined }),
 			ctx: {
 				pi: { events: { emit() {} } },
 				cwd: tempDir,
@@ -4252,17 +4337,14 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 			maxSubagentDepth: 2,
 		});
 
-		const resultPath = await waitForAsyncResultFile(id, 10_000);
-		const payload = JSON.parse(fs.readFileSync(resultPath, "utf-8")) as AsyncResultPayload;
-		assert.equal(payload.success, true);
-		assert.equal(payload.results[0].model, "deepseek/deepseek-v4-flash");
-		assert.deepEqual(payload.results[0].attemptedModels, ["deepseek/deepseek-v4-flash"]);
-		const args = readMockPiArgs(mockPi, 0);
-		assert.equal(args[args.indexOf("--model") + 1], "deepseek/deepseek-v4-flash");
+		assert.equal(launch.isError, true);
+		assert.match(launch.content[0]?.text ?? "", /no approved worker model candidate/i);
+		assert.equal(fs.existsSync(path.join(RESULTS_DIR, `${id}.json`)), false);
+		assert.equal(mockPi.callCount(), 0);
 	});
 
-	it("background forked runs inherit a parent model outside the registry", { skip: !isAsyncAvailable() || !createSubagentExecutor ? "jiti or executor not available" : undefined }, async () => {
-		mockPi.onCall({ output: "Forked async work" });
+	it("background forked runs reject a parent model outside the registry", { skip: !isAsyncAvailable() || !createSubagentExecutor ? "jiti or executor not available" : undefined }, async () => {
+		mockPi.onCall({ output: "should not spawn" });
 		const parentSessionFile = path.join(tempDir, "parent.jsonl");
 		const forkedSessionFile = path.join(tempDir, "forked.jsonl");
 		const sessionHeader = JSON.stringify({ type: "session", cwd: fs.realpathSync(tempDir) });
@@ -4279,63 +4361,47 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 				openSession: () => ({ createBranchedSession: () => forkedSessionFile }),
 			},
 		};
-		const launch = await makeAsyncExecutor([makeAgent("worker")]).execute(
+		const launch = await makeAsyncExecutor([makeAgent("worker", { model: undefined })]).execute(
 			"forked-parent-model",
 			{ agent: "worker", task: "Do work", async: true, context: "fork" },
 			new AbortController().signal,
 			undefined,
 			ctx,
 		) as AsyncExecutionResult;
-		assert.ok(!launch.isError, launch.content[0]?.text);
-		assert.ok(launch.details.asyncId);
-		const payload = await readAsyncPayload(launch.details.asyncId);
-		assert.equal(payload.results[0]?.model, "gateway/parent-model");
+		assert.equal(launch.isError, true);
+		assert.match(launch.content[0]?.text ?? "", /no approved worker model candidate/i);
+		assert.equal(mockPi.callCount(), 0);
 	});
 
-	it("revives an inherited parent model outside the current registry", { skip: !isAsyncAvailable() || !createSubagentExecutor ? "jiti or executor not available" : undefined }, async () => {
-		mockPi.onCall({ output: "Initial async work" });
+	it("rejects recovery launches that request an inherited parent model", { skip: !isAsyncAvailable() ? "jiti not available" : undefined }, () => {
+		mockPi.onCall({ output: "should not spawn" });
 		const sourceId = `async-revive-parent-model-${Date.now().toString(36)}`;
-		const sessionFile = path.join(tempDir, "sessions", "source.jsonl");
-		fs.mkdirSync(path.dirname(sessionFile), { recursive: true });
-		fs.writeFileSync(sessionFile, "", "utf-8");
-		executeAsyncSingle(sourceId, {
+		const launch = executeAsyncSingle(sourceId, {
 			agent: "worker",
 			task: "Initial work",
-			agentConfig: makeAgent("worker"),
+			agentConfig: makeAgent("worker", { model: undefined }),
 			ctx: { pi: { events: { emit() {} } }, cwd: tempDir, currentSessionId: "session-123" },
 			artifactConfig: { enabled: false, includeInput: false, includeOutput: false, includeJsonl: false, includeMetadata: false, cleanupDays: 7 },
 			shareEnabled: false,
 			sessionRoot: path.join(tempDir, "sessions"),
-			sessionFile,
 			modelOverride: "gateway/parent-model",
 			modelOverrideFromParent: true,
 			maxSubagentDepth: 2,
 		});
-		await readAsyncPayload(sourceId);
-		const descriptor = JSON.parse(fs.readFileSync(path.join(ASYNC_DIR, sourceId, "recovery-descriptor.json"), "utf-8"));
-		assert.equal(descriptor.modelOverrideFromParent, true);
 
-		mockPi.onCall({ output: "Revived async work" });
-		const result = await makeAsyncExecutor([makeAgent("worker")]).execute(
-			"revive-parent-model",
-			{ action: "resume", id: sourceId, message: "Continue" },
-			new AbortController().signal,
-			undefined,
-			makeMinimalCtx(tempDir),
-		) as AsyncExecutionResult;
-		assert.ok(!result.isError, result.content[0]?.text);
-		assert.ok(result.details.asyncId);
-		const payload = await readAsyncPayload(result.details.asyncId);
-		assert.equal(payload.results[0]?.model, "gateway/parent-model");
+		assert.equal(launch.isError, true);
+		assert.match(launch.content[0]?.text ?? "", /no approved worker model candidate/i);
+		assert.equal(fs.existsSync(path.join(ASYNC_DIR, sourceId, "recovery-descriptor.json")), false);
+		assert.equal(mockPi.callCount(), 0);
 	});
 
-	it("background chains inherit the parent session model when no step or agent model is set", { skip: !isAsyncAvailable() ? "jiti not available" : undefined }, async () => {
-		mockPi.onCall({ output: "Done asynchronously" });
+	it("background chains reject implicit parent-model inheritance", { skip: !isAsyncAvailable() ? "jiti not available" : undefined }, () => {
+		mockPi.onCall({ output: "should not spawn" });
 
 		const id = `async-chain-parent-model-${Date.now().toString(36)}`;
-		executeAsyncChain(id, {
+		const launch = executeAsyncChain(id, {
 			chain: [{ agent: "worker", task: "Do work" }],
-			agents: [makeAgent("worker")],
+			agents: [makeAgent("worker", { model: undefined })],
 			ctx: {
 				pi: { events: { emit() {} } },
 				cwd: tempDir,
@@ -4356,20 +4422,17 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 			maxSubagentDepth: 2,
 		});
 
-		const resultPath = await waitForAsyncResultFile(id, 10_000);
-		const payload = JSON.parse(fs.readFileSync(resultPath, "utf-8")) as AsyncResultPayload;
-		assert.equal(payload.success, true);
-		assert.equal(payload.results[0].model, "deepseek/deepseek-v4-flash");
-		assert.deepEqual(payload.results[0].attemptedModels, ["deepseek/deepseek-v4-flash"]);
-		const args = readMockPiArgs(mockPi, 0);
-		assert.equal(args[args.indexOf("--model") + 1], "deepseek/deepseek-v4-flash");
+		assert.equal(launch.isError, true);
+		assert.match(launch.content[0]?.text ?? "", /no approved worker model candidate/i);
+		assert.equal(fs.existsSync(path.join(RESULTS_DIR, `${id}.json`)), false);
+		assert.equal(mockPi.callCount(), 0);
 	});
 
-	it("background chains treat empty step models as parent inheritance", { skip: !isAsyncAvailable() ? "jiti not available" : undefined }, async () => {
+	it("background chains reject empty step models instead of inheriting the parent", { skip: !isAsyncAvailable() ? "jiti not available" : undefined }, async () => {
 		mockPi.onCall({ output: "Done asynchronously" });
 
 		const id = `async-chain-empty-model-${Date.now().toString(36)}`;
-		executeAsyncChain(id, {
+		const launch = executeAsyncChain(id, {
 			chain: [{ agent: "worker", task: "Do work", model: "" }],
 			agents: [makeAgent("worker", { model: "anthropic/claude-sonnet-4-5", thinking: "high" })],
 			ctx: {
@@ -4396,13 +4459,10 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 			maxSubagentDepth: 2,
 		});
 
-		const resultPath = await waitForAsyncResultFile(id, 10_000);
-		const payload = JSON.parse(fs.readFileSync(resultPath, "utf-8")) as AsyncResultPayload;
-		assert.equal(payload.success, true);
-		assert.equal(payload.results[0].model, "openai/gpt-5-mini:high");
-		assert.deepEqual(payload.results[0].attemptedModels, ["openai/gpt-5-mini:high"]);
-		const args = readMockPiArgs(mockPi, 0);
-		assert.equal(args[args.indexOf("--model") + 1], "openai/gpt-5-mini:high");
+		assert.equal(launch.isError, true);
+		assert.match(launch.content[0]?.text ?? "", /no approved worker model candidate/i);
+		assert.equal(fs.existsSync(path.join(RESULTS_DIR, `${id}.json`)), false);
+		assert.equal(mockPi.callCount(), 0);
 	});
 
 	it("background chains keep agent fallback models inherited for scope warnings", { skip: !isAsyncAvailable() ? "jiti not available" : undefined }, async () => {

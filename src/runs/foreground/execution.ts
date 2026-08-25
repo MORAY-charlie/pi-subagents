@@ -1775,12 +1775,24 @@ async function runSyncCompletionInner(
 	systemPrompt = injectOutputPathSystemPrompt(systemPrompt, options.outputPath, agent);
 
 	const candidates = buildModelCandidates(
-		options.modelOverride ?? agent.model,
+		options.modelOverrideFromParent ? undefined : options.modelOverride ?? agent.model,
 		agent.fallbackModels,
 		options.availableModels,
 		agent.modelProvider ?? options.preferredModelProvider,
-		{ scope: options.modelScope, primaryModelFromParent: options.modelOverrideFromParent },
+		{ scope: options.modelScope },
 	);
+	if (candidates.length === 0) {
+		const message = `Agent '${agent.name}' has no approved worker model candidate.`;
+		return redactResultPrompt(withRunContext({
+			index: options.index ?? 0,
+			agent: agent.name,
+			task,
+			exitCode: 1,
+			messages: [],
+			usage: emptyUsage(),
+			error: message,
+		}, options.context));
+	}
 	try {
 		for (const candidate of candidates) {
 			const model = applyThinkingSuffix(candidate, options.thinkingOverride ?? agent.thinking, options.thinkingOverride !== undefined);
@@ -1869,14 +1881,14 @@ async function runSyncCompletionInner(
 		},
 	};
 	let lastResult: SingleResult | undefined;
-	const modelsToTry = candidates.length > 0 ? candidates : [undefined];
+	const modelsToTry = candidates;
 	// Escalated to "file" after an unexplained zero-activity startup failure so
 	// retries keep the task text out of argv (endpoint pre-exec scans may deny it).
 	let taskDeliveryOverride: SubagentTaskDelivery | undefined;
 	modelAttemptsLoop: for (let modelIndex = 0; modelIndex < modelsToTry.length; modelIndex++) {
 		const candidate = modelsToTry[modelIndex];
 		for (let startupAttemptIndex = 0; ; startupAttemptIndex++) {
-			const verifyModel = Boolean(candidate) && !(options.modelOverrideFromParent && modelIndex === 0);
+			const verifyModel = Boolean(candidate);
 			const outputSnapshot = captureSingleOutputSnapshot(options.outputPath);
 			const result = await runSingleAttempt(runtimeCwd, agent, taskWithAcceptance, candidate, attemptOptions, {
 				sessionEnabled,

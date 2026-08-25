@@ -126,8 +126,8 @@ describe("fork context execution wiring", { skip: !available ? "subagent executo
 	function makeExecutorWithConfig(config: Record<string, unknown>) {
 		return makeExecutorWithDiscoverAgents(() => ({
 			agents: [
-				{ name: "echo", description: "Echo test agent" },
-				{ name: "second", description: "Second test agent" },
+				{ name: "echo", description: "Echo test agent", model: "mock/test-model" },
+				{ name: "second", description: "Second test agent", model: "mock/test-model" },
 			],
 			projectAgentsDir: null,
 		}), config);
@@ -276,6 +276,7 @@ describe("fork context execution wiring", { skip: !available ? "subagent executo
 			cwd: tempDir,
 			hasUI: false,
 			ui: {},
+			model: { provider: "mock", id: "test-model" },
 			modelRegistry: { getAvailable: () => [] },
 			sessionManager,
 		};
@@ -323,7 +324,7 @@ describe("fork context execution wiring", { skip: !available ? "subagent executo
 		const { manager } = makeSessionManagerRecorder({ sessionFile: undefined, leafId: "leaf-current" });
 		const executor = makeExecutorWithDiscoverAgents(() => ({
 			agents: [
-				{ name: "worker", description: "Worker", defaultContext: "fork" },
+				{ name: "worker", description: "Worker", defaultContext: "fork", model: "mock/test-model" },
 			],
 			projectAgentsDir: null,
 		}));
@@ -351,7 +352,7 @@ describe("fork context execution wiring", { skip: !available ? "subagent executo
 		const { manager, openedPaths, branchedLeafIds } = makeForkingSessionManagerRecorder({ sessionFile: parentSessionFile, leafId: "leaf-current" });
 		const executor = makeExecutorWithDiscoverAgents(() => ({
 			agents: [
-				{ name: "worker", description: "Worker", defaultContext: "fork" },
+				{ name: "worker", description: "Worker", defaultContext: "fork", model: "mock/test-model" },
 			],
 			projectAgentsDir: null,
 		}));
@@ -376,7 +377,7 @@ describe("fork context execution wiring", { skip: !available ? "subagent executo
 		const { manager, openedPaths, branchedLeafIds } = makeForkingSessionManagerRecorder({ sessionFile: parentSessionFile, leafId: "leaf-current" });
 		const executor = makeExecutorWithDiscoverAgents(() => ({
 			agents: [
-				{ name: "worker", description: "Worker", defaultContext: "fresh" },
+				{ name: "worker", description: "Worker", defaultContext: "fresh", model: "mock/test-model" },
 			],
 			projectAgentsDir: null,
 		}), { defaultSubagentContext: "fork" });
@@ -402,7 +403,7 @@ describe("fork context execution wiring", { skip: !available ? "subagent executo
 		const { manager, openedPaths } = makeForkingSessionManagerRecorder({ sessionFile: parentSessionFile, leafId: "leaf-current" });
 		const executor = makeExecutorWithDiscoverAgents(() => ({
 			agents: [
-				{ name: "worker", description: "Worker", defaultContext: "fork" },
+				{ name: "worker", description: "Worker", defaultContext: "fork", model: "mock/test-model" },
 			],
 			projectAgentsDir: null,
 		}), { defaultSubagentContext: "fresh" });
@@ -426,7 +427,7 @@ describe("fork context execution wiring", { skip: !available ? "subagent executo
 		const { manager, openedPaths, branchedLeafIds } = makeForkingSessionManagerRecorder({ sessionFile: parentSessionFile, leafId: "leaf-current" });
 		const executor = makeExecutorWithDiscoverAgents(() => ({
 			agents: [
-				{ name: "worker", description: "Worker", defaultContext: "fork" },
+				{ name: "worker", description: "Worker", defaultContext: "fork", model: "mock/test-model" },
 			],
 			projectAgentsDir: null,
 		}), { defaultSubagentContext: "fresh" });
@@ -658,7 +659,7 @@ describe("fork context execution wiring", { skip: !available ? "subagent executo
 		}
 	});
 
-	it("warns when empty inheritance falls back to an out-of-scope agent model", async () => {
+	it("rejects empty and inherit model overrides instead of using the parent", async () => {
 		const childSessionFile = path.join(tempDir, "fork-empty-model-scope-warning.jsonl");
 		const manager = makeSignedThinkingSessionManager(childSessionFile);
 		const executor = makeExecutorWithDiscoverAgents(() => ({
@@ -674,29 +675,19 @@ describe("fork context execution wiring", { skip: !available ? "subagent executo
 				getAvailable: () => [{ provider: "openai", id: "gpt-5-mini", api: "openai-responses", reasoning: true }],
 			},
 		};
-		const warnings: string[] = [];
-		const originalWarn = console.warn;
-		console.warn = (message?: unknown) => warnings.push(String(message));
-		try {
-			for (const model of ["", "inherit"]) {
-				const result = await executor.execute(
-					"id",
-					{ agent: "worker", task: "test", model },
-					new AbortController().signal,
-					undefined,
-					ctx,
-				);
-				assert.equal(result.isError, undefined);
-			}
 
-			assert.equal(warnings.length, 2);
-			assert.equal(warnings.every((warning) => warning.includes("outside the configured subagent model scope")), true);
-			for (const args of readAllCallArgs()) {
-				assert.equal(args[args.indexOf("--model") + 1], "openai/gpt-5-mini:high");
-			}
-		} finally {
-			console.warn = originalWarn;
+		for (const model of ["", "inherit"]) {
+			const result = await executor.execute(
+				"id",
+				{ agent: "worker", task: "test", model },
+				new AbortController().signal,
+				undefined,
+				ctx,
+			);
+			assert.equal(result.isError, true);
+			assert.match(result.content[0]?.text ?? "", /no approved worker model candidate/i);
 		}
+		assert.equal(mockPi.callCount(), 0);
 	});
 
 	it("notes the forced thinking downgrade in the result for Anthropic forked children", async () => {
@@ -745,12 +736,12 @@ describe("fork context execution wiring", { skip: !available ? "subagent executo
 		assert.equal(text.includes("fork context forced thinking off for worker (child 0)"), true);
 	});
 
-	it("resolves inherit before classifying a forked child", async () => {
+	it("rejects inherit before classifying a forked child", async () => {
 		const childSessionFile = path.join(tempDir, "fork-inherit-thinking.jsonl");
 		const manager = makeSignedThinkingSessionManager(childSessionFile);
 		const executor = makeExecutorWithDiscoverAgents(() => ({
 			agents: [
-				{ name: "worker", description: "Worker", defaultContext: "fork", thinking: "high" },
+				{ name: "worker", description: "Worker", defaultContext: "fork", model: undefined, thinking: "high" },
 			],
 			projectAgentsDir: null,
 		}));
@@ -770,18 +761,18 @@ describe("fork context execution wiring", { skip: !available ? "subagent executo
 			ctx,
 		);
 
-		assert.equal(result.isError, undefined);
-		const args = readCallArgs();
-		assert.equal(args[args.indexOf("--model") + 1], "anthropic/claude-sonnet-4-5:off");
+		assert.equal(result.isError, true);
+		assert.match(result.content[0]?.text ?? "", /no approved worker model candidate/i);
+		assert.equal(mockPi.callCount(), 0);
 	});
 
-	it("keeps inherited parent models outside the registry during foreground fork preparation", async () => {
+	it("rejects inherited parent models outside the registry during foreground fork preparation", async () => {
 		const { manager } = makeForkingSessionManagerRecorder({
 			sessionFile: path.join(tempDir, "parent.jsonl"),
 			leafId: "leaf-123",
 		});
 		const executor = makeExecutorWithDiscoverAgents(() => ({
-			agents: [{ name: "worker", description: "Worker", defaultContext: "fork" }],
+			agents: [{ name: "worker", description: "Worker", defaultContext: "fork", model: undefined }],
 			projectAgentsDir: null,
 		}));
 		const ctx = {
@@ -797,9 +788,9 @@ describe("fork context execution wiring", { skip: !available ? "subagent executo
 			undefined,
 			ctx,
 		);
-		assert.equal(inherited.isError, undefined);
-		const args = readCallArgs();
-		assert.equal(args[args.indexOf("--model") + 1], "gateway/parent-model");
+		assert.equal(inherited.isError, true);
+		assert.match(inherited.content[0]?.text ?? "", /no approved worker model candidate/i);
+		assert.equal(mockPi.callCount(), 0);
 
 		const explicit = await executor.execute(
 			"explicit-unknown-model",
@@ -854,7 +845,7 @@ describe("fork context execution wiring", { skip: !available ? "subagent executo
 		const { manager } = makeForkingSessionManagerRecorder({ sessionFile: parentSessionFile, leafId: "leaf-current" });
 		const executor = makeExecutorWithDiscoverAgents(() => ({
 			agents: [
-				{ name: "worker", description: "Worker", defaultContext: "fork" },
+				{ name: "worker", description: "Worker", defaultContext: "fork", model: "mock/test-model" },
 			],
 			projectAgentsDir: null,
 		}));
@@ -882,7 +873,7 @@ describe("fork context execution wiring", { skip: !available ? "subagent executo
 		const { manager, openedPaths, branchedLeafIds } = makeForkingSessionManagerRecorder({ sessionFile: parentSessionFile, leafId: "leaf-current" });
 		const executor = makeExecutorWithDiscoverAgents(() => ({
 			agents: [
-				{ name: "oracle", description: "Oracle", defaultContext: "fork" },
+				{ name: "oracle", description: "Oracle", defaultContext: "fork", model: "mock/test-model" },
 			],
 			projectAgentsDir: null,
 		}));
@@ -924,8 +915,8 @@ describe("fork context execution wiring", { skip: !available ? "subagent executo
 		};
 		const executor = makeExecutorWithDiscoverAgents(() => ({
 			agents: [
-				{ name: "scout", description: "Scout", defaultContext: "fresh" },
-				{ name: "worker", description: "Worker", defaultContext: "fork" },
+				{ name: "scout", description: "Scout", defaultContext: "fresh", model: "mock/test-model" },
+				{ name: "worker", description: "Worker", defaultContext: "fork", model: "mock/test-model" },
 			],
 			projectAgentsDir: null,
 		}));
@@ -959,8 +950,8 @@ describe("fork context execution wiring", { skip: !available ? "subagent executo
 		};
 		const executor = makeExecutorWithDiscoverAgents(() => ({
 			agents: [
-				{ name: "scout", description: "Scout", defaultContext: "fresh" },
-				{ name: "worker", description: "Worker", defaultContext: "fork" },
+				{ name: "scout", description: "Scout", defaultContext: "fresh", model: "mock/test-model" },
+				{ name: "worker", description: "Worker", defaultContext: "fork", model: "mock/test-model" },
 			],
 			projectAgentsDir: null,
 		}));
@@ -1033,7 +1024,7 @@ describe("fork context execution wiring", { skip: !available ? "subagent executo
 		const { manager } = makeSessionManagerRecorder({ sessionFile: parentSessionFile, leafId: "leaf-current" });
 		const executor = makeExecutorWithDiscoverAgents(() => ({
 			agents: [
-				{ name: "worker", description: "Worker", defaultContext: "fork" },
+				{ name: "worker", description: "Worker", defaultContext: "fork", model: "mock/test-model" },
 			],
 			projectAgentsDir: null,
 		}));
@@ -1058,7 +1049,7 @@ describe("fork context execution wiring", { skip: !available ? "subagent executo
 		const { manager } = makeSessionManagerRecorder({ sessionFile: parentSessionFile, leafId: null });
 		const executor = makeExecutorWithDiscoverAgents(() => ({
 			agents: [
-				{ name: "worker", description: "Worker", defaultContext: "fork" },
+				{ name: "worker", description: "Worker", defaultContext: "fork", model: "mock/test-model" },
 			],
 			projectAgentsDir: null,
 		}));
@@ -1081,7 +1072,7 @@ describe("fork context execution wiring", { skip: !available ? "subagent executo
 		const { manager } = makeSessionManagerRecorder({ sessionFile: undefined, leafId: "leaf-current" });
 		const executor = makeExecutorWithDiscoverAgents(() => ({
 			agents: [
-				{ name: "worker", description: "Worker", defaultContext: "fork" },
+				{ name: "worker", description: "Worker", defaultContext: "fork", model: "mock/test-model" },
 			],
 			projectAgentsDir: null,
 		}));

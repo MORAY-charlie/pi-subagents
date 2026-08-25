@@ -191,6 +191,7 @@ describe("intercom result delivery cutover", { skip: !available ? "executor not 
 			runFanoutBudget,
 			sourceRunId: runId,
 			agent,
+			model: "mock/test-model",
 			cwd: tempDir,
 			systemPromptMode: "replace",
 			inheritProjectContext: false,

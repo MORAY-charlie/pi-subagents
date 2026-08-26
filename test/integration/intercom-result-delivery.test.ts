@@ -1482,7 +1482,7 @@ describe("intercom result delivery cutover", { skip: !available ? "executor not 
 		let detachEmitted = false;
 		const original = await executor.execute(
 			"foreground-detached-completion-original",
-			{ agent: "a", task: "ask supervisor", acceptance: { level: "checked", criteria: ["Review completed"] } },
+			{ agent: "a", task: "ask supervisor", acceptance: { level: "checked", criteria: ["Review completed"] }, workflowParentRunId: "workflow-parent", workflowKey: "review" },
 			new AbortController().signal,
 			(update: { details?: { progress?: Array<{ currentTool?: string }> } }) => {
 				if (detachEmitted || !update.details?.progress?.some((entry) => entry.currentTool === "contact_supervisor")) return;
@@ -1515,12 +1515,16 @@ describe("intercom result delivery cutover", { skip: !available ? "executor not 
 			runId?: string;
 			sessionId?: string;
 			source?: string;
+			parentWorkflowRunId?: string;
+			workflowKey?: string;
 			summary?: string;
 			success?: boolean;
 		};
 		assert.equal(payload.runId, runId);
 		assert.equal(payload.sessionId, "session-123");
 		assert.equal(payload.source, "foreground");
+		assert.equal(payload.parentWorkflowRunId, "workflow-parent");
+		assert.equal(payload.workflowKey, "review");
 		assert.equal(payload.success, true);
 		assert.match(payload.summary ?? "", /final recovered answer/);
 		const recoveredMetadata = JSON.parse(fs.readFileSync(metadataPath, "utf-8")) as { exitCode?: number; acceptance?: { status?: string; childReport?: unknown } };
@@ -1942,5 +1946,48 @@ describe("intercom result delivery cutover", { skip: !available ? "executor not 
 		const message = String((intercomEvents[0]!.payload as { message?: string }).message ?? "");
 		assert.match(message, /process failed · output absent/);
 		assert.doesNotMatch(message, /Inspect that output before retrying/);
+	});
+
+	it("foreground execution emits canonical live started and completion events with full identity, model, task, and turns", async () => {
+		mockPi.onCall({ output: "Completed foreground task work" });
+		const { executor, events, state } = makeExecutor({ resultDelivery: true, agents: [makeAgent("worker", { model: "mock/worker-model" })] });
+		state.currentSessionId = "session-123";
+
+		const result = await executor.execute(
+			"foreground-canonical-events",
+			{ agent: "worker", task: "Canonical foreground task", workflowParentRunId: "workflow-parent", workflowKey: "scan" },
+			new AbortController().signal,
+			undefined,
+			makeMinimalCtx(tempDir),
+		);
+
+		assert.equal(result.isError, undefined);
+
+		// 1. Must emit canonical live started event before completion
+		const started = events.emitted.find((entry) => entry.channel === "subagent:foreground-started");
+		assert.ok(started, "expected subagent:foreground-started event to be emitted on foreground launch");
+		const startedPayload = started.payload as Record<string, unknown>;
+		assert.match(String(startedPayload.id), /^.+:0$/);
+		assert.ok(startedPayload.runId, "expected runId on foreground-started event");
+		assert.equal(startedPayload.taskIndex, 0);
+		assert.equal(startedPayload.agent, "worker");
+		assert.equal(startedPayload.task, "Canonical foreground task");
+		assert.equal(startedPayload.state, "running");
+		assert.equal(typeof startedPayload.startedAt, "number");
+
+		// 2. Must emit canonical completion event with model, task, turns, and timestamps
+		const completion = events.emitted.find((entry) => entry.channel === "subagent:foreground-complete");
+		assert.ok(completion, "expected subagent:foreground-complete event to be emitted");
+		const completePayload = completion.payload as Record<string, unknown>;
+		assert.equal(completePayload.id, startedPayload.id);
+		assert.equal(completePayload.runId, startedPayload.runId);
+		assert.equal(completePayload.taskIndex, 0);
+		assert.equal(completePayload.agent, "worker");
+		assert.equal(completePayload.task, "Canonical foreground task");
+		assert.equal(completePayload.parentWorkflowRunId, "workflow-parent");
+		assert.equal(completePayload.workflowKey, "scan");
+		assert.ok(completePayload.model, "expected model on foreground-complete event");
+		assert.ok(typeof completePayload.turns === "number" || typeof (completePayload.usage as any)?.turns === "number", "expected turns count on foreground-complete event");
+		assert.ok(typeof completePayload.startTime === "number" || typeof completePayload.startedAt === "number", "expected startTime on foreground-complete event");
 	});
 });

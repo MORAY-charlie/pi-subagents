@@ -207,6 +207,63 @@ describe("registerSubagentNotify", () => {
 		});
 	});
 
+	it("suppresses only routine foreground workflow child completions", async () => {
+		const { notifier, sent } = createPi("session-a");
+		const workflowChild = {
+			parentWorkflowRunId: "workflow-parent",
+			workflowKey: "scan",
+		};
+
+		// Explicitly detached async workflow children complete after their workflow
+		// returns, so their notification remains the only completion wake.
+		assert.equal(await notifier.deliver(completionResult({ id: "async-workflow-child", ...workflowChild })), true);
+		assert.equal(sent.length, 1);
+		assert.match((sent[0]!.message as { content: string }).content, /Background task completed: \*\*worker\*\*/);
+
+		assert.equal(await notifier.deliver(completionResult({
+			id: "foreground-workflow-child",
+			source: "foreground",
+			sessionId: "session-a",
+			completionOwnerId: undefined,
+			...workflowChild,
+		})), true);
+		assert.equal(sent.length, 1);
+
+		assert.equal(await notifier.deliver(completionResult({
+			id: "failed-workflow-child",
+			success: false,
+			exitCode: 1,
+			summary: "Child failed",
+			...workflowChild,
+		})), true);
+		assert.equal(sent.length, 2);
+		assert.match((sent[1]!.message as { content: string }).content, /Background task failed: \*\*worker\*\*/);
+
+		assert.equal(await notifier.deliver(completionResult({
+			id: "paused-foreground-workflow-child",
+			source: "foreground",
+			sessionId: "session-a",
+			completionOwnerId: undefined,
+			success: false,
+			exitCode: 0,
+			state: "paused",
+			summary: "Child paused",
+			...workflowChild,
+		})), true);
+		assert.match((sent[2]!.message as { content: string }).content, /Detached foreground task paused: \*\*worker\*\*/);
+
+		assert.equal(await notifier.deliver(completionResult({
+			id: "stopped-workflow-child",
+			success: false,
+			exitCode: 1,
+			state: "stopped",
+			stopped: true,
+			summary: "Child stopped",
+			...workflowChild,
+		})), true);
+		assert.match((sent[3]!.message as { content: string }).content, /Background task stopped: \*\*worker\*\*/);
+	});
+
 	it("does not deliver detached foreground completion to another active session", () => {
 		const { events, sent } = createPi("session-2");
 		events.emit(SUBAGENT_FOREGROUND_COMPLETE_EVENT, {

@@ -46,6 +46,8 @@ export interface CompletionNotification {
 	mode?: string;
 	runId?: string | null;
 	reconciledFromDetachedChild?: string;
+	parentWorkflowRunId?: string;
+	workflowKey?: string;
 	processSignal?: string | null;
 	interrupted?: boolean;
 	timedOut?: boolean;
@@ -363,13 +365,14 @@ export default function registerSubagentNotify(
 		if (disposed || typeof result.sessionId !== "string" || result.sessionId !== state.currentSessionId) return Promise.resolve(false);
 		if (result.source !== "foreground" && (!state.completionOwnerId || result.completionOwnerId !== state.completionOwnerId)) return Promise.resolve(false);
 		if (result.intercomDelivered === true) return Promise.resolve(true);
+		const details = buildCompletionDetails(result);
+		if (details.source === "foreground" && details.status === "completed" && typeof result.parentWorkflowRunId === "string" && result.parentWorkflowRunId.trim()) return Promise.resolve(true);
 		const key = buildCompletionKey(result, "notify");
 		const seenAt = seen.get(key);
 		if (seenAt !== undefined && now() - seenAt <= ttlMs) return Promise.resolve(true);
 		if (seenAt !== undefined) seen.delete(key);
 		const inFlight = pending.get(key);
 		if (inFlight) return inFlight;
-		const details = buildCompletionDetails(result);
 		let resolve!: (accepted: boolean) => void;
 		const completion = new Promise<boolean>((settleCompletion) => { resolve = settleCompletion; });
 		pending.set(key, completion);

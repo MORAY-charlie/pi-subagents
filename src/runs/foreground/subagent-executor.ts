@@ -171,6 +171,7 @@ import {
 	SUBAGENT_ACTIONS,
 	SUBAGENT_CONTROL_EVENT,
 	SUBAGENT_CONTROL_INTERCOM_EVENT,
+	SUBAGENT_FOREGROUND_STARTED_EVENT,
 	SUBAGENT_FOREGROUND_COMPLETE_EVENT,
 	checkSubagentDepth,
 	resolveTopLevelParallelConcurrency,
@@ -728,7 +729,7 @@ function applyControlEventToRememberedForegroundRun(state: SubagentState, event:
 	};
 }
 
-function updateRememberedForegroundChild(state: SubagentState, input: { runId: string; mode: "single" | "parallel" | "chain"; cwd: string; sessionId: string | null; index: number; result: SingleResult; events: IntercomEventBus; notify?: boolean }): void {
+function updateRememberedForegroundChild(state: SubagentState, input: { runId: string; mode: "single" | "parallel" | "chain"; cwd: string; sessionId: string | null; index: number; result: SingleResult; events: IntercomEventBus; notify?: boolean; task?: string; parentWorkflowRunId?: string; workflowKey?: string }): void {
 	state.foregroundRuns ??= new Map();
 	const updatedAt = Date.now();
 	let run = state.foregroundRuns.get(input.runId);
@@ -787,12 +788,30 @@ function updateRememberedForegroundChild(state: SubagentState, input: { runId: s
 	// A detached callback may outlive its extension runtime. Stale sessions are
 	// intentionally dropped rather than routed through a replacement runtime.
 	if (input.notify === false || !input.sessionId || input.sessionId !== state.currentSessionId) return;
+	const resultObj = input.result as unknown as Record<string, unknown>;
+	const startedAt = typeof resultObj.startTime === "number"
+		? resultObj.startTime
+		: typeof resultObj.startedAt === "number"
+			? resultObj.startedAt
+			: typeof input.result.progressSummary?.durationMs === "number"
+				? updatedAt - input.result.progressSummary.durationMs
+				: updatedAt;
+	const turns = input.result.usage?.turns ?? input.result.progress?.turnCount ?? 0;
 	input.events.emit(SUBAGENT_FOREGROUND_COMPLETE_EVENT, {
 		id: `${input.runId}:${input.index}`,
 		runId: input.runId,
 		source: "foreground",
 		mode: input.mode,
 		agent: input.result.agent,
+		task: input.task ?? input.result.task,
+		model: input.result.model,
+		...(input.result.thinking ? { thinking: input.result.thinking } : {}),
+		turns,
+		startTime: startedAt,
+		startedAt,
+		fleetKey: `foreground-recent:${input.runId}:${input.index}`,
+		...(input.parentWorkflowRunId ? { parentWorkflowRunId: input.parentWorkflowRunId } : {}),
+		...(input.workflowKey ? { workflowKey: input.workflowKey } : {}),
 		success,
 		summary,
 		exitCode: input.result.exitCode,
@@ -3596,8 +3615,8 @@ async function runSinglePath(data: ExecutionContextData, deps: ExecutorDeps): Pr
 	const interruptController = new AbortController();
 	let detachForeground: ((reason?: string) => boolean) | undefined;
 	const foregroundControl = deps.state.foregroundControls.get(runId);
+	const resolvedChildThinking = resolveEffectiveThinking(modelOverride, thinkingOverrideForTask(params.agent!, 0, modelOverride, modelOverrideFromParent));
 	if (foregroundControl) {
-		const thinking = resolveEffectiveThinking(modelOverride, thinkingOverrideForTask(params.agent!, 0, modelOverride, modelOverrideFromParent));
 		beginForegroundChild(foregroundControl, omitUndefinedProperties({
 			index: 0,
 			agent: params.agent!,
@@ -3608,7 +3627,7 @@ async function runSinglePath(data: ExecutionContextData, deps: ExecutorDeps): Pr
 			rerun: { params: { ...params, task: authoredTask, async: params.async ?? false } },
 			description: foregroundControl.description,
 			...(modelOverride ? { model: modelOverride } : {}),
-			...(thinking ? { thinking } : {}),
+			...(resolvedChildThinking ? { thinking: resolvedChildThinking } : {}),
 			interrupt: () => {
 				if (interruptController.signal.aborted) return false;
 				interruptController.abort();
@@ -3616,6 +3635,28 @@ async function runSinglePath(data: ExecutionContextData, deps: ExecutorDeps): Pr
 			},
 			detach: () => detachForeground?.("user request") === true,
 		}));
+	}
+	if (data.parentSessionId && (!deps.state.currentSessionId || data.parentSessionId === deps.state.currentSessionId)) {
+		try {
+			deps.pi.events.emit(SUBAGENT_FOREGROUND_STARTED_EVENT, {
+				id: `${runId}:0`,
+				runId,
+				source: "foreground",
+				mode: "single",
+				taskIndex: 0,
+				agent: params.agent!,
+				task: authoredTask,
+				model: modelOverride ?? agentConfig.model,
+				...(resolvedChildThinking ? { thinking: resolvedChildThinking } : {}),
+				state: "running",
+				startedAt: foregroundControl?.startedAt ?? Date.now(),
+				sessionId: data.parentSessionId,
+				cwd: singleCwd,
+				fleetKey: `foreground-active:${runId}:0`,
+			});
+		} catch {
+			// Lifecycle telemetry is best-effort and must not fail the child run after a session reload.
+		}
 	}
 
 	const forwardSingleUpdate = onUpdate
@@ -3678,12 +3719,13 @@ async function runSinglePath(data: ExecutionContextData, deps: ExecutorDeps): Pr
 			},
 			onDetachedExit: (result) => {
 				try {
+					const workflowParentRunId = params.workflowParentRunId ?? foregroundControl?.parentWorkflowRunId;
+					const workflowKey = params.workflowKey ?? foregroundControl?.workflowKey;
 					try {
-						updateRememberedForegroundChild(deps.state, { runId, mode: "single", cwd: singleCwd, sessionId: data.parentSessionId, index: 0, result, events: deps.pi.events, notify: true });
+						updateRememberedForegroundChild(deps.state, { runId, mode: "single", cwd: singleCwd, sessionId: data.parentSessionId, index: 0, result, events: deps.pi.events, notify: true, parentWorkflowRunId: workflowParentRunId, workflowKey });
 					} catch {
 						// Remembered foreground state is best-effort; run history and cleanup must still complete.
 					}
-					const workflowParentRunId = params.workflowParentRunId ?? foregroundControl?.parentWorkflowRunId;
 					if (workflowParentRunId) {
 						reconcileDetachedWorkflowChildCompletion({
 							state: deps.state,
@@ -3691,7 +3733,7 @@ async function runSinglePath(data: ExecutionContextData, deps: ExecutorDeps): Pr
 							childRunId: runId,
 							result,
 							events: deps.pi.events,
-							workflowKey: params.workflowKey ?? foregroundControl?.workflowKey,
+							workflowKey,
 						});
 					}
 				} finally {
@@ -3777,6 +3819,13 @@ async function runSinglePath(data: ExecutionContextData, deps: ExecutorDeps): Pr
 		...(worktreeHandoff?.reference ? { parallelHandoff: worktreeHandoff.reference } : {}),
 	}));
 	rememberForegroundRun(deps.state, { runId, mode: "single", cwd: singleCwd, sessionId: data.parentSessionId, results: details.results, extensionBindings: params.extensionBindings });
+	if (!r.detached) {
+		try {
+			updateRememberedForegroundChild(deps.state, { runId, mode: "single", cwd: singleCwd, sessionId: data.parentSessionId, index: 0, result: r, events: deps.pi.events, notify: true, task: authoredTask, parentWorkflowRunId: params.workflowParentRunId ?? foregroundControl?.parentWorkflowRunId, workflowKey: params.workflowKey ?? foregroundControl?.workflowKey });
+		} catch {
+			// Best effort event notification
+		}
+	}
 
 	const suppressRoutineResultIntercom = shouldSuppressRoutineResultIntercom({ suppressRoutineResultIntercom: params.suppressRoutineResultIntercom, results: [r] });
 	if (!r.detached && !r.interrupted && !suppressRoutineResultIntercom) {

@@ -77,6 +77,7 @@ import {
 	SUBAGENT_PROCESS_TERMINAL_EVENT,
 	SUBAGENT_CONTROL_EVENT,
 	SUBAGENT_STEERING_NOTICE_EVENT,
+	SUBAGENT_FLEET_OPEN_EVENT,
 	WIDGET_KEY,
 	resolveMaxSubagentSpawnsPerSession,
 } from "../shared/types.ts";
@@ -799,6 +800,17 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		}),
 		pi.events.on(SUBAGENT_CONTROL_EVENT, controlEventHandler),
 		pi.events.on(SUBAGENT_STEERING_NOTICE_EVENT, steeringNoticeHandler),
+		pi.events.on(SUBAGENT_FLEET_OPEN_EVENT, async (payload: any) => {
+			const ctx = state.lastUiContext;
+			if (!ctx?.hasUI) return;
+			const initialKey = typeof payload === "string" ? payload : payload?.initialKey ?? payload?.key ?? payload?.id ?? payload?.runId;
+			await openSubagentFleet(ctx, state, {
+				initialKey,
+				asyncDirRoot: DIRS.async,
+				resultsDir: DIRS.results,
+				fleetKeybindings: config.fleetKeybindings,
+			});
+		}),
 		herdrStatusBridge.dispose,
 		rpcBridge.dispose,
 	];

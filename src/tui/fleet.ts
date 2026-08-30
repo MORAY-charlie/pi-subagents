@@ -848,12 +848,21 @@ export class SubagentFleetComponent implements Component {
 	}
 
 	private refresh(): void {
-		const previousKey = this.snapshot.items[this.selected]?.key ?? this.selectedKey;
+		const previousKey = this.selectedKey ?? this.snapshot.items[this.selected]?.key;
 		this.snapshot = collectFleetSnapshot(this.state, this.options);
 		let preserved = previousKey ? this.snapshot.items.findIndex((item) => item.key === previousKey) : -1;
 		if (preserved < 0 && previousKey) {
 			const parentKey = visibleWorkflowParentKeyForForegroundKey(this.state, previousKey, this.snapshot.items);
 			if (parentKey) preserved = this.snapshot.items.findIndex((item) => item.key === parentKey);
+		}
+		if (preserved < 0 && previousKey) {
+			preserved = this.snapshot.items.findIndex((item) =>
+				item.key === previousKey ||
+				item.runId === previousKey ||
+				item.key.endsWith(`:${previousKey}`) ||
+				item.key.startsWith(`${previousKey}:`) ||
+				(item.runId && previousKey.includes(item.runId))
+			);
 		}
 		this.selected = preserved >= 0 ? preserved : Math.min(this.selected, Math.max(0, this.snapshot.items.length - 1));
 		this.selectedKey = this.snapshot.items[this.selected]?.key;
@@ -1354,6 +1363,17 @@ export class SubagentFleetComponent implements Component {
 		return lines.map((line) => truncateToWidth(line, width));
 	}
 
+	selectKey(key: string): boolean {
+		this.selectedKey = key;
+		this.selected = -1;
+		this.detailScroll = 0;
+		this.detailAutoFollow = true;
+		this.resetActionInput();
+		this.refresh();
+		this.tui.requestRender();
+		return this.snapshot.items[this.selected]?.key === key;
+	}
+
 	invalidate(): void {
 		this.transcriptCache = undefined;
 		this.refresh();
@@ -1361,11 +1381,21 @@ export class SubagentFleetComponent implements Component {
 
 	dispose(): void {
 		this.stopRefresh();
+		if (this.state.activeFleetComponent === this) {
+			this.state.activeFleetComponent = null;
+		}
 	}
 }
 
 export async function openSubagentFleet(ctx: ExtensionContext, state: SubagentState, options: FleetViewOptions = {}): Promise<void> {
-	const wasOpen = state.fleetInspectorOpen === true;
+	if (state.activeFleetComponent) {
+		if (options.initialKey) {
+			state.activeFleetComponent.selectKey(options.initialKey);
+		}
+		return;
+	}
+	const wasOpen = Boolean(state.fleetInspectorOpen);
+	if (wasOpen) return;
 	state.fleetInspectorOpen = true;
 	if (typeof ctx.ui.setWidget === "function") ctx.ui.setWidget(FLEET_STATUS_WIDGET_KEY, undefined);
 	const copyText = options.copyText ?? (async (text: string) => {
@@ -1418,13 +1448,18 @@ export async function openSubagentFleet(ctx: ExtensionContext, state: SubagentSt
 	} satisfies FleetActionHandlers;
 	try {
 		await ctx.ui.custom<undefined>(
-			(tui, theme, _keybindings, done) => new SubagentFleetComponent(tui, theme, state, done, { ...options, actions, copyText }),
+			(tui, theme, _keybindings, done) => {
+				const component = new SubagentFleetComponent(tui, theme, state, done, { ...options, actions, copyText });
+				state.activeFleetComponent = component;
+				return component;
+			},
 			{
 				overlay: true,
 				overlayOptions: { anchor: "center", width: "95%", minWidth: 60, maxHeight: "85%", margin: 1 },
 			},
 		);
 	} finally {
+		state.activeFleetComponent = null;
 		state.fleetInspectorOpen = wasOpen;
 	}
 }

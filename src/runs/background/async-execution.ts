@@ -493,6 +493,25 @@ interface SpawnRunnerResult {
 	startupDidNotProceed?: boolean;
 }
 
+function isStaleExtensionContextError(error: unknown): boolean {
+	const message = error instanceof Error ? error.message : String(error);
+	return /stale/i.test(message) && (/session replacement/i.test(message) || /reload/i.test(message) || /extension ctx is stale/i.test(message));
+}
+
+function safeEmitProcessTerminalProof(ctx: AsyncExecutionContext | undefined, proof: NonNullable<ReturnType<typeof readProcessTerminal>>): void {
+	if (!ctx?.pi?.events?.emit) return;
+	try {
+		ctx.pi.events.emit(SUBAGENT_PROCESS_TERMINAL_EVENT, proof);
+	} catch (error) {
+		if (isStaleExtensionContextError(error)) {
+			// Stale context after reload or session replacement: drop advisory event silently
+			return;
+		}
+		const message = error instanceof Error ? error.message : String(error);
+		console.warn(`[pi-subagents] Failed to emit process-terminal event for run '${proof.runId}': ${message}`);
+	}
+}
+
 function spawnRunner(cfg: object, suffix: string, cwd: string, onProcessTerminal?: (proof: unknown) => void): SpawnRunnerResult {
 	if (!jitiCliPath) {
 		return { error: "upstream jiti for TypeScript execution could not be found; ensure package dependencies are installed" };
@@ -600,7 +619,14 @@ function spawnRunner(cfg: object, suffix: string, cwd: string, onProcessTerminal
 					console.error("Failed to emit final nested process-terminal status:", error);
 				}
 			}
-			onProcessTerminal?.(persisted);
+			try {
+				onProcessTerminal?.(persisted);
+			} catch (error) {
+				if (!isStaleExtensionContextError(error)) {
+					const message = error instanceof Error ? error.message : String(error);
+					console.warn(`[pi-subagents] Failed to process runner terminal exit for run '${runId}': ${message}`);
+				}
+			}
 		});
 		if (typeof proc.pid !== "number") {
 			return { error: `async runner did not produce a pid for cwd: ${cwd}` };
@@ -1240,7 +1266,7 @@ export function executeAsyncChain(
 			},
 			id,
 			runnerCwd,
-			(proof) => ctx.pi.events.emit(SUBAGENT_PROCESS_TERMINAL_EVENT, proof),
+			(proof) => safeEmitProcessTerminalProof(ctx, proof as NonNullable<ReturnType<typeof readProcessTerminal>>),
 		);
 	} catch (error) {
 		params.activeAsyncCapacity?.rollback();
@@ -1773,7 +1799,7 @@ export function executeAsyncSingle(
 			},
 			id,
 			runnerCwd,
-			(proof) => ctx.pi.events.emit(SUBAGENT_PROCESS_TERMINAL_EVENT, proof),
+			(proof) => safeEmitProcessTerminalProof(ctx, proof as NonNullable<ReturnType<typeof readProcessTerminal>>),
 		);
 	} catch (error) {
 		params.activeAsyncCapacity?.rollback();

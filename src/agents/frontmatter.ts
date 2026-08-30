@@ -45,6 +45,8 @@ function foldBlock(block: string): string {
  */
 export function parseFrontmatterList(raw: string | undefined): string[] | undefined {
 	if (raw === undefined) return undefined;
+	const trimmed = raw.trim();
+	if (trimmed === "[]" || trimmed === "none" || trimmed === "") return [];
 	return raw
 		.split("\n")
 		.flatMap((line) => {
@@ -53,7 +55,7 @@ export function parseFrontmatterList(raw: string | undefined): string[] | undefi
 			return (listItem?.[1] ?? value).split(",");
 		})
 		.map((value) => value.trim())
-		.filter(Boolean);
+		.filter((v) => v && v !== "[]" && v !== "none");
 }
 
 /**

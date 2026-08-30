@@ -1910,6 +1910,8 @@ export interface SubagentState {
 	fleetJobs?: Map<string, AsyncJobState>;
 	/** Suppress dynamic status widgets while the fleet overlay owns the viewport. */
 	fleetInspectorOpen?: boolean;
+	/** Active FleetView component while the overlay is open. */
+	activeFleetComponent?: { selectKey(key: string): boolean; dispose(): void } | null;
 	/** Temporarily suppress dynamic widgets while Pi compacts the session. */
 	widgetsSuspended?: boolean;
 	foregroundRuns?: Map<string, ForegroundResumeRun>;
@@ -1989,6 +1991,24 @@ export const SUBAGENT_STEERING_NOTICE_EVENT = "subagent:steering-notice";
 export const SUBAGENT_CHILD_STATUS_EVENT = "subagent:child-status";
 export const SUBAGENT_RESULT_INTERCOM_EVENT = "subagent:result-intercom";
 export const SUBAGENT_RESULT_INTERCOM_DELIVERY_EVENT = "subagent:result-intercom-delivery";
+export const SUBAGENT_FLEET_OPEN_EVENT = "subagents:fleet:open";
+
+export interface SubagentForegroundStartedEvent {
+	id: string;
+	runId: string;
+	source: "foreground";
+	mode: "single" | "parallel" | "chain" | "workflow";
+	taskIndex: number;
+	agent: string;
+	task?: string;
+	model?: string;
+	thinking?: string;
+	state: "running";
+	startedAt: number;
+	sessionId?: string;
+	cwd?: string;
+	fleetKey?: string;
+}
 
 export interface SubagentChildStatusEvent {
 	type: "subagent.child-status";

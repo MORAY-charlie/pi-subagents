@@ -20,7 +20,7 @@ import { waitForSubagents } from "../../src/runs/background/subagent-wait.ts";
 import { writeAtomicJson } from "../../src/shared/atomic-json.ts";
 import { CHILD_WATCHDOG_STATUS_EVENT } from "../../src/watchdog/child-status.ts";
 import { MAX_CHILD_PENDING_LINE_BYTES, MAX_CHILD_STDERR_BYTES } from "../../src/runs/shared/child-protocol.ts";
-import { SUBAGENT_ASYNC_STARTED_EVENT, SUBAGENT_LIFECYCLE_ARTIFACT_VERSION, TEMP_ARTIFACTS_DIR } from "../../src/shared/types.ts";
+import { SUBAGENT_ASYNC_STARTED_EVENT, SUBAGENT_LIFECYCLE_ARTIFACT_VERSION, SUBAGENT_PROCESS_TERMINAL_EVENT, TEMP_ARTIFACTS_DIR } from "../../src/shared/types.ts";
 import { registerSubagentCapabilityCeiling } from "../../src/api/capability-ceiling.ts";
 import { resolveSubagentLaunchContract } from "../../src/api/preflight.ts";
 import { discoverAgents } from "../../src/agents/agents.ts";
@@ -5669,5 +5669,153 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		const status = JSON.parse(fs.readFileSync(path.join(asyncDir, "status.json"), "utf-8"));
 		assert.deepEqual(status.steps[0].recentTools.map((tool: { tool: string; args: string }) => ({ tool: tool.tool, args: tool.args })), [{ tool: "bash", args: "ls" }]);
 		assert.deepEqual(status.steps[0].recentOutput, ["file-a", "file-b", "Done streaming"]);
+	});
+
+	it("single background runner process exit tolerates stale extension context without uncaught exception", { skip: !isAsyncAvailable() ? "jiti not available" : undefined }, async () => {
+		mockPi.onCall({ output: "Output from single runner with stale context" });
+		const id = `async-single-stale-ctx-${Date.now().toString(36)}`;
+		let isStale = false;
+		const staleCtx = {
+			pi: {
+				events: {
+					emit: (channel: string, payload: unknown) => {
+						if (isStale || channel === SUBAGENT_PROCESS_TERMINAL_EVENT) {
+							throw new Error("This extension ctx is stale after session replacement or reload");
+						}
+					},
+				},
+			},
+			cwd: tempDir,
+			currentSessionId: "session-1",
+		};
+
+		const result = executeAsyncSingle(id, {
+			agent: "worker",
+			task: "Complete task with stale context",
+			agentConfig: makeAgent("worker"),
+			ctx: staleCtx,
+			artifactConfig: {
+				enabled: false,
+				includeInput: false,
+				includeOutput: false,
+				includeJsonl: false,
+				includeMetadata: false,
+				cleanupDays: 7,
+			},
+			shareEnabled: false,
+			sessionRoot: path.join(tempDir, "sessions"),
+			maxSubagentDepth: 2,
+		});
+
+		assert.equal(result.isError, undefined);
+		isStale = true; // Simulates /reload occurring while the background child runs
+		const resultPath = await waitForAsyncResultFile(id, 30_000);
+		const payload = JSON.parse(fs.readFileSync(resultPath, "utf-8")) as AsyncResultPayload;
+		assert.equal(payload.success, true);
+		assert.equal(payload.results[0]?.output, "Output from single runner with stale context");
+		// Allow child exit handler to complete and check that persisted terminal state is intact
+		await new Promise((resolve) => setTimeout(resolve, 500));
+		const asyncDir = path.join(ASYNC_DIR, id);
+		const terminalProof = readStatus(asyncDir);
+		assert.ok(terminalProof, "expected async status to be readable after runner exit");
+	});
+
+	it("chain/workflow background runner process exit tolerates stale extension context without uncaught exception", { skip: !isAsyncAvailable() ? "jiti not available" : undefined }, async () => {
+		mockPi.onCall({ output: "Output from chain runner with stale context" });
+		const id = `async-chain-stale-ctx-${Date.now().toString(36)}`;
+		let isStale = false;
+		const staleCtx = {
+			pi: {
+				events: {
+					emit: (channel: string, payload: unknown) => {
+						if (isStale || channel === SUBAGENT_PROCESS_TERMINAL_EVENT) {
+							throw new Error("This extension ctx is stale after session replacement or reload");
+						}
+					},
+				},
+			},
+			cwd: tempDir,
+			currentSessionId: "session-1",
+		};
+
+		const result = executeAsyncChain(id, {
+			chain: [{ agent: "worker", task: "Complete chain task with stale context" }],
+			agents: [makeAgent("worker")],
+			ctx: staleCtx,
+			artifactConfig: {
+				enabled: false,
+				includeInput: false,
+				includeOutput: false,
+				includeJsonl: false,
+				includeMetadata: false,
+				cleanupDays: 7,
+			},
+			shareEnabled: false,
+			sessionRoot: path.join(tempDir, "sessions"),
+			maxSubagentDepth: 2,
+		});
+
+		assert.equal(result.isError, undefined);
+		isStale = true; // Simulates /reload occurring while the background child runs
+		const resultPath = await waitForAsyncResultFile(id, 30_000);
+		const payload = JSON.parse(fs.readFileSync(resultPath, "utf-8")) as AsyncResultPayload;
+		assert.equal(payload.success, true);
+		assert.equal(payload.results[0]?.output, "Output from chain runner with stale context");
+		// Allow child exit handler to complete and check that persisted terminal state is intact
+		await new Promise((resolve) => setTimeout(resolve, 500));
+		const asyncDir = path.join(ASYNC_DIR, id);
+		const terminalProof = readStatus(asyncDir);
+		assert.ok(terminalProof, "expected async status to be readable after runner exit");
+	});
+
+	it("non-stale extension context receives SUBAGENT_PROCESS_TERMINAL_EVENT exactly once on background runner exit", { skip: !isAsyncAvailable() ? "jiti not available" : undefined }, async () => {
+		mockPi.onCall({ output: "Output for non-stale terminal test" });
+		const id = `async-single-terminal-proof-${Date.now().toString(36)}`;
+		const emittedEvents: Array<{ channel: string; payload: unknown }> = [];
+		const validCtx = {
+			pi: {
+				events: {
+					emit: (channel: string, payload: unknown) => {
+						emittedEvents.push({ channel, payload });
+					},
+				},
+			},
+			cwd: tempDir,
+			currentSessionId: "session-1",
+		};
+
+		const result = executeAsyncSingle(id, {
+			agent: "worker",
+			task: "Complete task with valid context",
+			agentConfig: makeAgent("worker"),
+			ctx: validCtx,
+			artifactConfig: {
+				enabled: false,
+				includeInput: false,
+				includeOutput: false,
+				includeJsonl: false,
+				includeMetadata: false,
+				cleanupDays: 7,
+			},
+			shareEnabled: false,
+			sessionRoot: path.join(tempDir, "sessions"),
+			maxSubagentDepth: 2,
+		});
+
+		assert.equal(result.isError, undefined);
+		await waitForAsyncResultFile(id, 30_000);
+
+		// Wait for process terminal event
+		const deadline = Date.now() + 5_000;
+		while (Date.now() < deadline && !emittedEvents.some((e) => e.channel === SUBAGENT_PROCESS_TERMINAL_EVENT)) {
+			await new Promise((resolve) => setTimeout(resolve, 50));
+		}
+
+		const terminalEvents = emittedEvents.filter((e) => e.channel === SUBAGENT_PROCESS_TERMINAL_EVENT);
+		assert.equal(terminalEvents.length, 1, "expected SUBAGENT_PROCESS_TERMINAL_EVENT to be emitted exactly once");
+		const proof = terminalEvents[0]?.payload as { runId?: string; state?: string; runnerProcessInstanceId?: string; version?: number };
+		assert.equal(proof?.runId, id);
+		assert.equal(proof?.state, "observed");
+		assert.ok(proof?.runnerProcessInstanceId, "expected runnerProcessInstanceId on terminal proof");
 	});
 });

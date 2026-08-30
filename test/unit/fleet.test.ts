@@ -1739,4 +1739,130 @@ describe("native subagent fleet", () => {
 			fs.rmSync(root, { recursive: true, force: true });
 		}
 	});
+
+	it("updates selection of open FleetView on second open request without opening a second modal (Symptom B)", async () => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-fleet-select-update-"));
+		try {
+			writeAsyncRun(root, { id: "async-A", agents: ["agent-a"], state: "running" });
+			writeAsyncRun(root, { id: "async-B", agents: ["agent-b"], state: "running" });
+			const state = stateForTest();
+			state.asyncJobs.set("async-A", {
+				asyncId: "async-A",
+				asyncDir: path.join(root, "async-A"),
+				status: "running",
+				mode: "single",
+				agents: ["agent-a"],
+				startedAt: 100,
+				updatedAt: 200,
+			});
+			state.asyncJobs.set("async-B", {
+				asyncId: "async-B",
+				asyncDir: path.join(root, "async-B"),
+				status: "running",
+				mode: "single",
+				agents: ["agent-b"],
+				startedAt: 150,
+				updatedAt: 250,
+			});
+
+			let customModalCallCount = 0;
+			let activeComponent: SubagentFleetComponent | undefined;
+			let closeFirstModal: (() => void) | undefined;
+
+			const ctx = {
+				hasUI: true,
+				ui: {
+					setWidget() {},
+					async custom(factory: (tui: unknown, theme: unknown, keybindings: unknown, done: (result: undefined) => void) => SubagentFleetComponent) {
+						customModalCallCount++;
+						const component = factory(
+							{ terminal: { rows: 32, columns: 100 }, requestRender() {} },
+							theme,
+							undefined,
+							() => {},
+						);
+						activeComponent = component;
+						return new Promise<undefined>((resolve) => {
+							closeFirstModal = () => {
+								component.dispose();
+								resolve(undefined);
+							};
+						});
+					},
+				},
+			};
+
+			// Open FleetView initially focused on async-A
+			const openPromise1 = openSubagentFleet(ctx as never, state, {
+				asyncDirRoot: root,
+				resultsDir: path.join(root, "results"),
+				initialKey: "async:async-A",
+				refreshMs: 60_000,
+			});
+
+			// Allow microtasks to run and initialize activeComponent
+			await new Promise((resolve) => setImmediate(resolve));
+			assert.ok(activeComponent, "active FleetView component should be initialized");
+			assert.equal(customModalCallCount, 1);
+
+			let lines = activeComponent.render(100);
+			let selectedLine = lines.find((l) => l.includes("›"));
+			assert.ok(selectedLine?.includes("agent-a"), `expected agent-a to be selected initially, got: ${selectedLine}`);
+
+			// While FleetView is already open, a second request arrives targeting async-B
+			const openPromise2 = openSubagentFleet(ctx as never, state, {
+				asyncDirRoot: root,
+				resultsDir: path.join(root, "results"),
+				initialKey: "async:async-B",
+				refreshMs: 60_000,
+			});
+
+			await new Promise((resolve) => setImmediate(resolve));
+
+			// Must not spawn a second modal
+			assert.equal(customModalCallCount, 1, "should not attempt or spawn a second modal when FleetView is already open");
+
+			// Active inspector selection must move to async-B
+			lines = activeComponent.render(100);
+			selectedLine = lines.find((l) => l.includes("›"));
+			assert.ok(selectedLine?.includes("agent-b"), `expected selection to move to agent-b, got: ${selectedLine}`);
+
+			// Close and reopen should focus async-B by exact key
+			closeFirstModal?.();
+			await openPromise1;
+			await openPromise2;
+
+			let reopenedComponent: SubagentFleetComponent | undefined;
+			const reopenCtx = {
+				hasUI: true,
+				ui: {
+					setWidget() {},
+					async custom(factory: (tui: unknown, theme: unknown, keybindings: unknown, done: (result: undefined) => void) => SubagentFleetComponent) {
+						reopenedComponent = factory(
+							{ terminal: { rows: 32, columns: 100 }, requestRender() {} },
+							theme,
+							undefined,
+							() => {},
+						);
+						return undefined;
+					},
+				},
+			};
+
+			await openSubagentFleet(reopenCtx as never, state, {
+				asyncDirRoot: root,
+				resultsDir: path.join(root, "results"),
+				initialKey: "async:async-B",
+				refreshMs: 60_000,
+			});
+
+			assert.ok(reopenedComponent, "reopened component should exist");
+			const reopenLines = reopenedComponent.render(100);
+			const reopenSelected = reopenLines.find((l) => l.includes("›"));
+			assert.ok(reopenSelected?.includes("agent-b"), `expected reopened FleetView to focus agent-b, got: ${reopenSelected}`);
+			reopenedComponent.dispose();
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	});
 });
